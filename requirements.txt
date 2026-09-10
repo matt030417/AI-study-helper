@@ -1,0 +1,6 @@
+streamlit>=1.40
+openai>=1.100
+PyMuPDF>=1.24
+python-pptx>=1.0
+scikit-learn>=1.5
+pandas>=2.2
