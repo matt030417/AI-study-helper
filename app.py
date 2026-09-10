@@ -15,7 +15,6 @@ from document_engine import (
     extract_uploaded_file,
     reference_labels,
 )
-from storage import init_db, load_attempts, log_attempt, reset_db
 
 
 st.set_page_config(
@@ -24,7 +23,6 @@ st.set_page_config(
     layout="wide",
 )
 
-init_db()
 
 
 # -------------------------
@@ -41,6 +39,7 @@ DEFAULTS = {
     "practice_eval": None,
     "weak_queue": [],
     "ai_call_count": 0,
+    "attempts": [],
 }
 for key, value in DEFAULTS.items():
     if key not in st.session_state:
@@ -55,69 +54,38 @@ def _secret(name: str, default=""):
 
 
 def get_provider_config():
-    """
-    Provider priority:
-    1) User-selected provider if configured
-    2) KU Gateway if KU_API_KEY exists
-    3) OpenAI if OPENAI_API_KEY exists
-    4) Local developer input
-    """
-    ku_key = str(_secret("KU_API_KEY", "")).strip()
-    ku_base = str(_secret("KU_BASE_URL", "https://factchat.mindlogic-kr-api.com/v1/gateway")).strip()
-    ku_model = str(_secret("KU_MODEL", "gpt-5-nano")).strip()
+    provider = st.session_state.get("provider", "고려대 API Gateway")
 
-    openai_key = str(_secret("OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")).strip()
-    openai_model = str(_secret("OPENAI_MODEL", "gpt-5.6-luna")).strip()
-
-    available = []
-    if ku_key:
-        available.append("고려대 API Gateway")
-    if openai_key:
-        available.append("OpenAI API")
-
-    selected = st.session_state.get("provider")
-    if selected not in available and available:
-        selected = available[0]
-        st.session_state.provider = selected
-
-    if selected == "고려대 API Gateway":
+    if provider == "고려대 API Gateway":
         return {
-            "provider": selected,
-            "api_key": ku_key,
-            "base_url": ku_base,
-            "model": ku_model,
+            "provider": provider,
+            "api_key": st.session_state.get("user_api_key", "").strip(),
+            "base_url": "https://factchat.mindlogic-kr-api.com/v1/gateway",
+            "model": st.session_state.get("user_model", "gpt-5.6-luna").strip(),
         }
 
-    if selected == "OpenAI API":
-        return {
-            "provider": selected,
-            "api_key": openai_key,
-            "base_url": None,
-            "model": openai_model,
-        }
-
-    # local developer mode
-    local_key = st.session_state.get("api_key", "").strip()
-    local_base = st.session_state.get("local_base_url", "").strip() or None
-    local_model = st.session_state.get("model", "gpt-5-nano").strip()
     return {
-        "provider": "개발 모드",
-        "api_key": local_key,
-        "base_url": local_base,
-        "model": local_model,
+        "provider": "OpenAI API",
+        "api_key": st.session_state.get("user_api_key", "").strip(),
+        "base_url": None,
+        "model": st.session_state.get("user_model", "gpt-5.6-luna").strip(),
     }
 
 
 def get_engine():
     cfg = get_provider_config()
+
     if not cfg["api_key"]:
-        st.error("AI 연결 정보가 없습니다. 서버 Secret에 고려대/OpenAI API Key를 설정해 주세요.")
+        st.error("왼쪽 사이드바에 본인의 API Key를 입력해 주세요.")
         return None
 
-    max_calls = int(_secret("MAX_AI_CALLS_PER_SESSION", 30) or 30)
+    max_calls = 30
     used = int(st.session_state.get("ai_call_count", 0))
     if used >= max_calls:
-        st.error(f"이 브라우저 세션의 AI 호출 한도({max_calls}회)에 도달했습니다.")
+        st.error(
+            "현재 브라우저 세션에서 AI를 30회 호출했습니다. "
+            "새 학습 세션을 시작하려면 페이지를 다시 열어 주세요."
+        )
         return None
 
     return AIEngine(
@@ -181,52 +149,46 @@ with st.sidebar:
     st.title("🎓 AI 학습 도우미")
     st.caption("강의자료 기반 구술시험 → 약점 탐지 → 맞춤 문제 → 피드백")
 
-    ku_key_present = bool(str(_secret("KU_API_KEY", "")).strip())
-    openai_key_present = bool(str(_secret("OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")).strip())
+    st.session_state.provider = st.selectbox(
+        "AI 제공자",
+        ["고려대 API Gateway", "OpenAI API"],
+        index=0 if st.session_state.get("provider", "고려대 API Gateway") == "고려대 API Gateway" else 1,
+    )
 
-    providers = []
-    if ku_key_present:
-        providers.append("고려대 API Gateway")
-    if openai_key_present:
-        providers.append("OpenAI API")
+    st.session_state.user_api_key = st.text_input(
+        "내 API Key",
+        value=st.session_state.get("user_api_key", ""),
+        type="password",
+        placeholder="본인의 API Key를 입력",
+        help=(
+            "입력한 키는 이 앱의 현재 브라우저 세션에서 AI 호출에만 사용하며, "
+            "GitHub나 학습 DB에 저장하지 않습니다."
+        ),
+    )
 
-    if providers:
-        if st.session_state.get("provider") not in providers:
-            st.session_state.provider = providers[0]
+    default_model = st.session_state.get("user_model", "gpt-5.6-luna")
+    st.session_state.user_model = st.text_input(
+        "모델",
+        value=default_model,
+        help=(
+            "고려대 API 사용 시 학교 API Gateway의 모델 ID를 입력하세요. "
+            "예: gpt-5.6-luna"
+        ),
+    )
 
-        st.success("AI 서버 연결됨")
-        st.caption("방문자는 별도의 API Key를 입력할 필요가 없습니다.")
-
-        if len(providers) > 1:
-            st.selectbox("AI 제공자", providers, key="provider")
-        else:
-            st.session_state.provider = providers[0]
-            st.write(f"**AI 제공자:** {providers[0]}")
-
-        cfg = get_provider_config()
-        st.write(f"**모델:** {cfg['model']}")
-        if cfg["provider"] == "고려대 API Gateway":
-            st.caption("학교 API Gateway를 통해 호출됩니다.")
+    if st.session_state.provider == "고려대 API Gateway":
+        st.caption("학교 API Gateway 사용 · 사용량은 입력한 본인 계정의 API 크레딧에서 차감됩니다.")
     else:
-        st.warning("개발 모드: 서버 API Key 미설정")
-        st.session_state.api_key = st.text_input(
-            "API Key",
-            value=st.session_state.get("api_key", ""),
-            type="password",
-            help="로컬 테스트용입니다. 공개 배포에서는 Streamlit Secrets를 사용하세요.",
-        )
-        st.session_state.local_base_url = st.text_input(
-            "Base URL (선택)",
-            value=st.session_state.get("local_base_url", ""),
-            placeholder="예: https://factchat.mindlogic-kr-api.com/v1/gateway",
-        )
-        st.session_state.model = st.text_input(
-            "모델",
-            value=st.session_state.get("model", "gpt-5-nano"),
-        )
+        st.caption("OpenAI 직접 API 사용 · 사용량은 입력한 본인 OpenAI API 계정에서 차감됩니다.")
 
-    max_calls = int(_secret("MAX_AI_CALLS_PER_SESSION", 30) or 30)
-    st.caption(f"현재 세션 AI 호출: {int(st.session_state.get('ai_call_count', 0))} / {max_calls}")
+    if st.session_state.user_api_key:
+        st.success("개인 API Key 입력됨")
+    else:
+        st.warning("AI 기능을 사용하려면 본인의 API Key를 입력해 주세요.")
+
+    st.caption(
+        f"현재 세션 AI 호출: {int(st.session_state.get('ai_call_count', 0))} / 30"
+    )
 
     st.divider()
     if st.session_state.chunks:
@@ -241,7 +203,7 @@ st.title("AI 학습 도우미")
 st.write(
     "강의자료와 기출문제를 기반으로 **구술 질문 → 답변 평가 → 취약 개념 탐지 → 맞춤 문제 → 채점·피드백**을 반복하는 AI 학습 프로토타입입니다."
 )
-st.caption("배포 버전에서는 고려대 API Gateway 또는 OpenAI API를 서버 Secret으로 연결하므로 사용자는 링크만 열어 학습할 수 있습니다.")
+st.caption("공개 링크로 접속한 뒤 각 사용자가 자신의 API Key를 입력해 사용합니다. 다른 사용자의 크레딧이나 학습 기록과 섞이지 않습니다.")
 
 tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
     ["1. 자료 등록", "2. 구술시험", "3. 맞춤 연습", "4. 학습 현황"]
@@ -396,17 +358,18 @@ with tab_oral:
                             for wc in ev["weak_concepts"]:
                                 if wc not in st.session_state.weak_queue:
                                     st.session_state.weak_queue.append(wc)
-                            log_attempt(
-                                stage="oral",
-                                concept=", ".join(q["target_concepts"]),
-                                score=ev["score"],
-                                verdict=ev["verdict"],
-                                error_type=ev["error_type"],
-                                question=q["question"],
-                                student_answer=oral_answer,
-                                feedback=ev["feedback"],
-                                weak_concepts=ev["weak_concepts"],
-                            )
+                            st.session_state.attempts.append({
+                                "created_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "stage": "oral",
+                                "concept": ", ".join(q["target_concepts"]),
+                                "score": ev["score"],
+                                "verdict": ev["verdict"],
+                                "error_type": ev["error_type"],
+                                "question": q["question"],
+                                "student_answer": oral_answer,
+                                "feedback": ev["feedback"],
+                                "weak_concepts": ev["weak_concepts"],
+                            })
 
         ev = st.session_state.oral_eval
         if ev:
@@ -579,17 +542,18 @@ with tab_practice:
                                 if wc not in st.session_state.weak_queue:
                                     st.session_state.weak_queue.append(wc)
 
-                            log_attempt(
-                                stage="practice",
-                                concept=problem["concept"],
-                                score=pe["score"],
-                                verdict="correct" if pe["is_correct"] else "incorrect",
-                                error_type=pe["error_type"],
-                                question=problem["problem"],
-                                student_answer=student_final,
-                                feedback=pe["feedback"],
-                                weak_concepts=pe["weak_concepts"],
-                            )
+                            st.session_state.attempts.append({
+                                "created_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "stage": "practice",
+                                "concept": problem["concept"],
+                                "score": pe["score"],
+                                "verdict": "correct" if pe["is_correct"] else "incorrect",
+                                "error_type": pe["error_type"],
+                                "question": problem["problem"],
+                                "student_answer": student_final,
+                                "feedback": pe["feedback"],
+                                "weak_concepts": pe["weak_concepts"],
+                            })
 
         pe = st.session_state.practice_eval
         if pe:
@@ -618,16 +582,21 @@ with tab_practice:
 # -------------------------
 with tab_dashboard:
     st.subheader("학습 현황")
+    st.caption("이 기록은 현재 사용자의 브라우저 세션에만 유지되며 다른 사용자와 공유되지 않습니다.")
 
-    attempts = load_attempts()
+    attempts = list(st.session_state.get("attempts", []))
+
     if not attempts:
         st.info("아직 채점 기록이 없습니다. 구술시험이나 맞춤 문제를 풀면 여기에 누적됩니다.")
     else:
         df = pd.DataFrame(attempts)
+        # 최신 기록이 위로 오도록 표시
+        display_df = df.iloc[::-1].reset_index(drop=True)
+
         c1, c2, c3 = st.columns(3)
         c1.metric("총 응답", len(df))
         c2.metric("평균 점수", f"{df['score'].mean():.1f}")
-        c3.metric("최근 점수", int(df.iloc[0]["score"]))
+        c3.metric("최근 점수", int(df.iloc[-1]["score"]))
 
         st.markdown("### 오류 유형")
         error_counts = (
@@ -641,15 +610,11 @@ with tab_dashboard:
         else:
             st.success("기록된 오류가 없습니다.")
 
+        from collections import Counter
         weak_counter = Counter()
-        for raw in df["weak_concepts"].dropna():
-            try:
-                import json
-                for x in json.loads(raw):
-                    if x:
-                        weak_counter[x] += 1
-            except Exception:
-                pass
+        for items in df["weak_concepts"]:
+            if isinstance(items, list):
+                weak_counter.update([x for x in items if x])
 
         if weak_counter:
             st.markdown("### 반복적으로 나타난 취약 개념")
@@ -668,18 +633,22 @@ with tab_dashboard:
             "error_type",
             "question",
         ]
-        st.dataframe(df[show_cols].head(30), use_container_width=True, hide_index=True)
+        st.dataframe(
+            display_df[show_cols].head(30),
+            use_container_width=True,
+            hide_index=True,
+        )
 
-        with st.expander("개발/데모용: 학습 기록 초기화"):
-            if st.button("기록 전체 삭제"):
-                reset_db()
-                st.session_state.weak_queue = []
-                st.success("학습 기록을 초기화했습니다.")
-                st.rerun()
+        if st.button("현재 학습 기록 초기화"):
+            st.session_state.attempts = []
+            st.session_state.weak_queue = []
+            st.session_state.ai_call_count = 0
+            st.success("현재 브라우저 세션의 학습 기록을 초기화했습니다.")
+            st.rerun()
 
 
 st.divider()
 st.caption(
     "MVP 설계: 자료는 로컬에서 텍스트 추출/검색하고, 실제 AI 호출에는 관련 chunk만 전달합니다. "
-    "AI 응답은 Structured Outputs로 받아 단계별 결과를 안정적으로 연결합니다."
+    "사용자의 API Key는 현재 세션에서만 사용하며, 앱은 학습 기록을 서버 DB에 저장하지 않습니다."
 )
