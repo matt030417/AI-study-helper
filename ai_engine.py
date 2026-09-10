@@ -140,8 +140,11 @@ NUMERIC_FEEDBACK_SCHEMA = {
 
 
 class AIEngine:
-    def __init__(self, api_key: str, model: str = "gpt-5.6-luna"):
-        self.client = OpenAI(api_key=api_key)
+    def __init__(self, api_key: str, model: str = "gpt-5-nano", base_url: str | None = None):
+        kwargs = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url.rstrip("/")
+        self.client = OpenAI(**kwargs)
         self.model = model
 
     def _structured(self, *, name: str, schema: dict, instructions: str, prompt: str) -> dict[str, Any]:
