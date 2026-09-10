@@ -54,18 +54,64 @@ def _secret(name: str, default=""):
         return default
 
 
-def get_api_key():
-    # 배포 환경에서는 Streamlit Secrets를 최우선으로 사용합니다.
-    server_key = str(_secret("OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")).strip()
-    if server_key:
-        return server_key
-    return st.session_state.get("api_key", "").strip()
+def get_provider_config():
+    """
+    Provider priority:
+    1) User-selected provider if configured
+    2) KU Gateway if KU_API_KEY exists
+    3) OpenAI if OPENAI_API_KEY exists
+    4) Local developer input
+    """
+    ku_key = str(_secret("KU_API_KEY", "")).strip()
+    ku_base = str(_secret("KU_BASE_URL", "https://factchat.mindlogic-kr-api.com/v1/gateway")).strip()
+    ku_model = str(_secret("KU_MODEL", "gpt-5-nano")).strip()
+
+    openai_key = str(_secret("OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")).strip()
+    openai_model = str(_secret("OPENAI_MODEL", "gpt-5.6-luna")).strip()
+
+    available = []
+    if ku_key:
+        available.append("고려대 API Gateway")
+    if openai_key:
+        available.append("OpenAI API")
+
+    selected = st.session_state.get("provider")
+    if selected not in available and available:
+        selected = available[0]
+        st.session_state.provider = selected
+
+    if selected == "고려대 API Gateway":
+        return {
+            "provider": selected,
+            "api_key": ku_key,
+            "base_url": ku_base,
+            "model": ku_model,
+        }
+
+    if selected == "OpenAI API":
+        return {
+            "provider": selected,
+            "api_key": openai_key,
+            "base_url": None,
+            "model": openai_model,
+        }
+
+    # local developer mode
+    local_key = st.session_state.get("api_key", "").strip()
+    local_base = st.session_state.get("local_base_url", "").strip() or None
+    local_model = st.session_state.get("model", "gpt-5-nano").strip()
+    return {
+        "provider": "개발 모드",
+        "api_key": local_key,
+        "base_url": local_base,
+        "model": local_model,
+    }
 
 
 def get_engine():
-    key = get_api_key()
-    if not key:
-        st.error("AI 연결 정보가 없습니다. 배포 관리자가 API Key를 설정하거나, 개발 모드에서 개인 Key를 입력해 주세요.")
+    cfg = get_provider_config()
+    if not cfg["api_key"]:
+        st.error("AI 연결 정보가 없습니다. 서버 Secret에 고려대/OpenAI API Key를 설정해 주세요.")
         return None
 
     max_calls = int(_secret("MAX_AI_CALLS_PER_SESSION", 30) or 30)
@@ -74,8 +120,11 @@ def get_engine():
         st.error(f"이 브라우저 세션의 AI 호출 한도({max_calls}회)에 도달했습니다.")
         return None
 
-    model = str(_secret("OPENAI_MODEL", "") or st.session_state.get("model", "gpt-5.6-luna"))
-    return AIEngine(key, model)
+    return AIEngine(
+        cfg["api_key"],
+        model=cfg["model"],
+        base_url=cfg["base_url"],
+    )
 
 
 def pick_context(query: str, k: int = 7):
@@ -132,27 +181,49 @@ with st.sidebar:
     st.title("🎓 AI 학습 도우미")
     st.caption("강의자료 기반 구술시험 → 약점 탐지 → 맞춤 문제 → 피드백")
 
-    server_key_present = bool(str(_secret("OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")).strip())
+    ku_key_present = bool(str(_secret("KU_API_KEY", "")).strip())
+    openai_key_present = bool(str(_secret("OPENAI_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")).strip())
 
-    if server_key_present:
+    providers = []
+    if ku_key_present:
+        providers.append("고려대 API Gateway")
+    if openai_key_present:
+        providers.append("OpenAI API")
+
+    if providers:
+        if st.session_state.get("provider") not in providers:
+            st.session_state.provider = providers[0]
+
         st.success("AI 서버 연결됨")
         st.caption("방문자는 별도의 API Key를 입력할 필요가 없습니다.")
-        st.session_state.api_key = ""
+
+        if len(providers) > 1:
+            st.selectbox("AI 제공자", providers, key="provider")
+        else:
+            st.session_state.provider = providers[0]
+            st.write(f"**AI 제공자:** {providers[0]}")
+
+        cfg = get_provider_config()
+        st.write(f"**모델:** {cfg['model']}")
+        if cfg["provider"] == "고려대 API Gateway":
+            st.caption("학교 API Gateway를 통해 호출됩니다.")
     else:
         st.warning("개발 모드: 서버 API Key 미설정")
         st.session_state.api_key = st.text_input(
-            "개인 OpenAI API Key",
+            "API Key",
             value=st.session_state.get("api_key", ""),
             type="password",
             help="로컬 테스트용입니다. 공개 배포에서는 Streamlit Secrets를 사용하세요.",
         )
-
-    st.session_state.model = st.text_input(
-        "모델",
-        value=st.session_state.get("model", str(_secret("OPENAI_MODEL", "gpt-5.6-luna"))),
-        help="배포 Secret에 OPENAI_MODEL이 있으면 서버 설정이 우선합니다.",
-        disabled=server_key_present and bool(_secret("OPENAI_MODEL", "")),
-    )
+        st.session_state.local_base_url = st.text_input(
+            "Base URL (선택)",
+            value=st.session_state.get("local_base_url", ""),
+            placeholder="예: https://factchat.mindlogic-kr-api.com/v1/gateway",
+        )
+        st.session_state.model = st.text_input(
+            "모델",
+            value=st.session_state.get("model", "gpt-5-nano"),
+        )
 
     max_calls = int(_secret("MAX_AI_CALLS_PER_SESSION", 30) or 30)
     st.caption(f"현재 세션 AI 호출: {int(st.session_state.get('ai_call_count', 0))} / {max_calls}")
@@ -170,7 +241,7 @@ st.title("AI 학습 도우미")
 st.write(
     "강의자료와 기출문제를 기반으로 **구술 질문 → 답변 평가 → 취약 개념 탐지 → 맞춤 문제 → 채점·피드백**을 반복하는 AI 학습 프로토타입입니다."
 )
-st.caption("배포 버전에서는 AI API Key를 서버 Secret에 저장하므로 사용자는 링크만 열어 학습할 수 있습니다.")
+st.caption("배포 버전에서는 고려대 API Gateway 또는 OpenAI API를 서버 Secret으로 연결하므로 사용자는 링크만 열어 학습할 수 있습니다.")
 
 tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
     ["1. 자료 등록", "2. 구술시험", "3. 맞춤 연습", "4. 학습 현황"]
