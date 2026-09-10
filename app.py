@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
 from collections import Counter, defaultdict
 
 import pandas as pd
@@ -14,6 +15,9 @@ from document_engine import (
     context_to_text,
     extract_uploaded_file,
     reference_labels,
+    render_pdf_page_png,
+    select_evidence,
+    source_location,
 )
 
 
@@ -34,12 +38,14 @@ DEFAULTS = {
     "question": None,
     "question_context": [],
     "oral_eval": None,
+    "oral_eval_context": [],
     "practice": None,
     "practice_context": [],
     "practice_eval": None,
     "weak_queue": [],
     "ai_call_count": 0,
     "attempts": [],
+    "source_files": {},
 }
 for key, value in DEFAULTS.items():
     if key not in st.session_state:
@@ -142,6 +148,48 @@ def parse_number(text: str):
         return None
 
 
+
+def show_evidence(items: list[dict], evidence_ids=None, title: str = "근거 자료", max_items: int = 3):
+    """Show exact source/page, extracted source text, and PDF page preview when available."""
+    selected = select_evidence(items, evidence_ids, fallback=max_items)[:max_items]
+    if not selected:
+        return
+
+    with st.expander(title):
+        if evidence_ids:
+            st.caption("AI가 [자료 N] 중 직접 근거로 지정한 부분입니다. 원문은 앱이 업로드 자료에서 직접 추출한 내용입니다.")
+        else:
+            st.caption("AI에 전달된 관련 자료 중 상위 근거입니다. 원문은 앱이 업로드 자료에서 직접 추출한 내용입니다.")
+
+        for i, item in enumerate(selected, start=1):
+            kind_label = "강의자료" if item.get("kind") == "lecture" else "기출문제"
+            score = item.get("score")
+            score_text = f" · 검색 관련도 {score:.2f}" if isinstance(score, (int, float)) else ""
+
+            with st.container(border=True):
+                st.markdown(f"**{i}. {source_location(item)}**")
+                st.caption(f"{kind_label}{score_text}")
+                st.markdown("**원문 발췌**")
+                excerpt = (item.get("text") or "").strip()
+                st.write(excerpt[:1200] + ("…" if len(excerpt) > 1200 else ""))
+
+                source_file = st.session_state.get("source_files", {}).get(item.get("source"))
+                if source_file and source_file.get("suffix") == "pdf":
+                    digest = hashlib.md5(
+                        f"{title}|{item.get('source')}|{item.get('page')}|{i}".encode("utf-8")
+                    ).hexdigest()[:12]
+                    if st.checkbox("실제 PDF 페이지 보기", key=f"pdf_evidence_{digest}"):
+                        try:
+                            png = render_pdf_page_png(source_file["raw"], int(item["page"]))
+                            st.image(
+                                png,
+                                caption=f"{item['source']} · p.{item['page']}",
+                                use_container_width=True,
+                            )
+                        except Exception as e:
+                            st.info(f"페이지 미리보기를 표시하지 못했습니다: {e}")
+
+
 # -------------------------
 # Sidebar
 # -------------------------
@@ -215,7 +263,7 @@ tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
 # -------------------------
 with tab_upload:
     st.subheader("강의자료 / 기출문제 등록")
-    st.caption("현재 MVP는 PDF, PPTX, TXT, MD를 지원합니다. 스캔 이미지 PDF는 OCR이 없어 텍스트 추출이 안 될 수 있습니다.")
+    st.caption("PDF, PPTX, TXT, MD를 지원합니다. PDF는 AI 근거의 실제 페이지까지 확인할 수 있습니다. 스캔 이미지 PDF는 OCR이 없어 텍스트 추출이 안 될 수 있습니다.")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -239,14 +287,27 @@ with tab_upload:
         else:
             page_records = []
             failed = []
+            source_files = {}
             with st.spinner("자료에서 텍스트를 추출하고 검색 인덱스를 만드는 중..."):
                 for f in lecture_files or []:
                     try:
+                        raw = f.getvalue()
+                        source_files[f.name] = {
+                            "raw": raw,
+                            "suffix": f.name.lower().rsplit(".", 1)[-1],
+                            "kind": "lecture",
+                        }
                         page_records.extend(extract_uploaded_file(f, "lecture"))
                     except Exception as e:
                         failed.append(f"{f.name}: {e}")
                 for f in exam_files or []:
                     try:
+                        raw = f.getvalue()
+                        source_files[f.name] = {
+                            "raw": raw,
+                            "suffix": f.name.lower().rsplit(".", 1)[-1],
+                            "kind": "exam",
+                        }
                         page_records.extend(extract_uploaded_file(f, "exam"))
                     except Exception as e:
                         failed.append(f"{f.name}: {e}")
@@ -255,8 +316,10 @@ with tab_upload:
                 if chunks:
                     st.session_state.chunks = chunks
                     st.session_state.retriever = LocalRetriever(chunks)
+                    st.session_state.source_files = source_files
                     st.session_state.question = None
                     st.session_state.oral_eval = None
+                    st.session_state.oral_eval_context = []
                     st.session_state.practice = None
                     st.session_state.practice_eval = None
                     st.session_state.weak_queue = []
@@ -327,8 +390,11 @@ with tab_oral:
                 f"유형: {q['question_type']} · 난이도: {q['difficulty']} · "
                 f"확인 개념: {', '.join(q['target_concepts'])}"
             )
-            with st.expander("이 질문이 참고한 자료"):
-                st.write(" / ".join(reference_labels(st.session_state.question_context)))
+            show_evidence(
+                st.session_state.question_context,
+                q.get("evidence_ids"),
+                title="📚 질문 출제 근거 보기",
+            )
 
             oral_answer = st.text_area(
                 "내 답변",
@@ -355,6 +421,7 @@ with tab_oral:
                             )
                         if ev:
                             st.session_state.oral_eval = ev
+                            st.session_state.oral_eval_context = eval_items
                             for wc in ev["weak_concepts"]:
                                 if wc not in st.session_state.weak_queue:
                                     st.session_state.weak_queue.append(wc)
@@ -394,6 +461,12 @@ with tab_oral:
 
             st.markdown("**피드백**")
             st.write(ev["feedback"])
+
+            show_evidence(
+                st.session_state.get("oral_eval_context", []),
+                ev.get("evidence_ids"),
+                title="🔎 채점·피드백 근거 보기",
+            )
 
             if ev["weak_concepts"]:
                 st.warning("취약 개념: " + ", ".join(ev["weak_concepts"]))
@@ -462,8 +535,11 @@ with tab_practice:
                 f"개념: {problem['concept']} · 유형: {problem['problem_type']} · "
                 f"난이도: {problem['difficulty']} · 답 형식: {problem['answer_format']}"
             )
-            with st.expander("문제 생성에 참고한 자료"):
-                st.write(" / ".join(reference_labels(st.session_state.practice_context)))
+            show_evidence(
+                st.session_state.practice_context,
+                problem.get("evidence_ids"),
+                title="📚 맞춤 문제 출제 근거 보기",
+            )
 
             student_final = st.text_input(
                 "최종 답",
@@ -649,6 +725,6 @@ with tab_dashboard:
 
 st.divider()
 st.caption(
-    "MVP 설계: 자료는 로컬에서 텍스트 추출/검색하고, 실제 AI 호출에는 관련 chunk만 전달합니다. "
+    "자료는 로컬에서 텍스트 추출/검색하고, AI는 [자료 N] 근거 번호를 함께 반환합니다. PDF는 해당 실제 페이지까지 확인할 수 있습니다. "
     "사용자의 API Key는 현재 세션에서만 사용하며, 앱은 학습 기록을 서버 DB에 저장하지 않습니다."
 )
