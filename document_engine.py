@@ -184,3 +184,42 @@ def reference_labels(items: list[dict]) -> list[str]:
             seen.add(label)
             labels.append(label)
     return labels
+
+
+
+def select_evidence(items: list[dict], evidence_ids: list[int] | None, fallback: int = 3) -> list[dict]:
+    """Map 1-based [자료 N] citations returned by the model back to retrieved chunks."""
+    selected = []
+    seen = set()
+    for raw_id in evidence_ids or []:
+        try:
+            idx = int(raw_id) - 1
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(items) and idx not in seen:
+            selected.append(items[idx])
+            seen.add(idx)
+    return selected or list(items[:fallback])
+
+
+def render_pdf_page_png(raw: bytes, page_number: int, zoom: float = 1.35) -> bytes:
+    """Render a 1-based PDF page number to PNG bytes for in-app evidence preview."""
+    doc = fitz.open(stream=raw, filetype="pdf")
+    try:
+        if page_number < 1 or page_number > len(doc):
+            raise ValueError(f"PDF 페이지 범위를 벗어났습니다: {page_number}")
+        page = doc[page_number - 1]
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        return pix.tobytes("png")
+    finally:
+        doc.close()
+
+
+def source_location(item: dict) -> str:
+    source = item.get("source", "자료")
+    page = item.get("page", 1)
+    if source.lower().endswith(".pptx"):
+        return f"{source} · 슬라이드 {page}"
+    if source.lower().endswith(".pdf"):
+        return f"{source} · p.{page}"
+    return f"{source} · 위치 {page}"
