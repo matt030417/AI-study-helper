@@ -14,8 +14,9 @@ QUESTION_SCHEMA = {
         "question_type": {"type": "string", "enum": ["concept", "calculation", "mixed"]},
         "difficulty": {"type": "string", "enum": ["easy", "medium", "hard"]},
         "why_this_question": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"type": "integer"}},
     },
-    "required": ["question", "target_concepts", "question_type", "difficulty", "why_this_question"],
+    "required": ["question", "target_concepts", "question_type", "difficulty", "why_this_question", "evidence_ids"],
     "additionalProperties": False,
 }
 
@@ -43,6 +44,7 @@ EVALUATION_SCHEMA = {
         },
         "feedback": {"type": "string"},
         "ideal_answer": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"type": "integer"}},
     },
     "required": [
         "score",
@@ -53,6 +55,7 @@ EVALUATION_SCHEMA = {
         "error_type",
         "feedback",
         "ideal_answer",
+        "evidence_ids",
     ],
     "additionalProperties": False,
 }
@@ -71,6 +74,7 @@ PROBLEM_SCHEMA = {
         "expected_unit": {"type": ["string", "null"]},
         "reference_answer": {"type": "string"},
         "solution": {"type": "string"},
+        "evidence_ids": {"type": "array", "items": {"type": "integer"}},
     },
     "required": [
         "problem",
@@ -84,6 +88,7 @@ PROBLEM_SCHEMA = {
         "expected_unit",
         "reference_answer",
         "solution",
+        "evidence_ids",
     ],
     "additionalProperties": False,
 }
@@ -177,7 +182,8 @@ class AIEngine:
 제공된 강의자료와 기출문제 맥락 안에서만 질문을 만든다.
 기출문제는 그대로 복사하기보다 같은 핵심 개념/출제 방식의 새로운 질문을 만든다.
 학생이 단순 암기보다 이해와 적용을 보여줄 수 있는 질문을 선호한다.
-맥락에 없는 세부 사실을 임의로 추가하지 않는다."""
+맥락에 없는 세부 사실을 임의로 추가하지 않는다.
+질문을 만드는 데 직접 근거가 된 [자료 N] 번호 1~3개를 evidence_ids에 정수로 넣는다. 존재하지 않는 자료 번호를 만들지 않는다."""
 
         prompt = f"""[학습 범위]
 {topic or "자료 전체"}
@@ -208,7 +214,8 @@ class AIEngine:
 단순 표현 차이는 오답 처리하지 않는다.
 부분적으로 맞으면 partial로 평가하고 빠진 핵심을 명확히 짚는다.
 학생이 틀린 이유를 가능한 한 구체적인 오류 유형으로 분류한다.
-이상적인 답안은 학습용으로 간결하고 정확하게 작성한다."""
+이상적인 답안은 학습용으로 간결하고 정확하게 작성한다.
+평가와 모범답안의 직접 근거가 된 [자료 N] 번호 1~3개를 evidence_ids에 정수로 넣는다. 존재하지 않는 자료 번호를 만들지 않는다."""
 
         prompt = f"""[질문]
 {question}
@@ -241,7 +248,8 @@ class AIEngine:
 numeric_answer와 합리적인 절대오차 tolerance, expected_unit을 반드시 제공한다.
 그렇지 않으면 grading_mode=llm으로 한다.
 문제 안에 필요한 상수/수치가 자료에 없으면 문제 자체에서 제공한다.
-기출문제 문장을 그대로 복제하지 않는다."""
+기출문제 문장을 그대로 복제하지 않는다.
+문제와 기준 풀이를 만드는 데 직접 근거가 된 [자료 N] 번호 1~3개를 evidence_ids에 정수로 넣는다. 존재하지 않는 자료 번호를 만들지 않는다."""
 
         prompt = f"""[취약 개념]
 {weak_concept}
