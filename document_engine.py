@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from io import BytesIO
 from typing import Iterable
+import base64
 import re
 
 import fitz  # PyMuPDF
+from PIL import Image, ImageOps
 from pptx import Presentation
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -223,3 +225,64 @@ def source_location(item: dict) -> str:
     if source.lower().endswith(".pdf"):
         return f"{source} · p.{page}"
     return f"{source} · 위치 {page}"
+
+
+def _compress_solution_image(raw: bytes, max_side: int = 1600, quality: int = 82) -> bytes:
+    """Normalize uploaded work to a reasonably sized JPEG for multimodal grading."""
+    image = Image.open(BytesIO(raw))
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    if max(image.size) > max_side:
+        image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+
+    out = BytesIO()
+    image.save(out, format="JPEG", quality=quality, optimize=True)
+    return out.getvalue()
+
+
+def solution_file_to_images(uploaded_file, max_pages: int = 3) -> list[dict]:
+    """Convert a student's PDF/JPG/PNG work into compact images for preview + AI vision.
+
+    Returns dictionaries with:
+      label, jpeg_bytes, data_url
+    PDF pages are rendered to images; only the first `max_pages` are used to control cost.
+    """
+    name = uploaded_file.name
+    suffix = name.lower().rsplit(".", 1)[-1]
+    raw = uploaded_file.getvalue()
+    results: list[dict] = []
+
+    if suffix == "pdf":
+        pdf = fitz.open(stream=raw, filetype="pdf")
+        try:
+            page_count = min(len(pdf), max_pages)
+            for idx in range(page_count):
+                page = pdf[idx]
+                # Render at a readable resolution, then compress/downscale.
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.8, 1.8), alpha=False)
+                png = pix.tobytes("png")
+                jpeg = _compress_solution_image(png)
+                data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+                results.append(
+                    {
+                        "label": f"{name} · p.{idx + 1}",
+                        "jpeg_bytes": jpeg,
+                        "data_url": data_url,
+                    }
+                )
+        finally:
+            pdf.close()
+
+    elif suffix in {"jpg", "jpeg", "png"}:
+        jpeg = _compress_solution_image(raw)
+        data_url = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+        results.append(
+            {
+                "label": name,
+                "jpeg_bytes": jpeg,
+                "data_url": data_url,
+            }
+        )
+    else:
+        raise ValueError("풀이 파일은 PDF, JPG, JPEG, PNG만 지원합니다.")
+
+    return results
