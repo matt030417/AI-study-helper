@@ -10,10 +10,18 @@ import streamlit as st
 
 from ai_engine import AIEngine
 from cloud_storage import (
-    delete_all_attempts,
+    create_project,
+    delete_project,
+    delete_project_attempts,
+    delete_project_file,
+    download_project_file,
     load_attempts,
+    load_project_files,
+    load_projects,
     normalize_username,
+    rename_project,
     save_attempt,
+    save_project_file,
     sign_in,
     sign_out,
     sign_up,
@@ -60,6 +68,11 @@ DEFAULTS = {
     "cloud_user_id": "",
     "cloud_username": "",
     "cloud_loaded": False,
+    "projects": [],
+    "current_project_id": "",
+    "current_project_name": "",
+    "loaded_material_project_id": "",
+    "current_project_files": [],
 }
 for key, value in DEFAULTS.items():
     if key not in st.session_state:
@@ -94,7 +107,7 @@ def cloud_logged_in() -> bool:
 
 
 def rebuild_weak_queue(attempts: list[dict]) -> list[str]:
-    """Prioritize recent weaknesses when a returning user logs back in."""
+    """Prioritize recent weaknesses inside the currently selected project."""
     seen = set()
     ordered = []
     for attempt in reversed(attempts):
@@ -106,24 +119,115 @@ def rebuild_weak_queue(attempts: list[dict]) -> list[str]:
     return ordered[:20]
 
 
+def current_project_attempts() -> list[dict]:
+    project_id = st.session_state.get("current_project_id", "")
+    if not project_id:
+        return []
+    return [
+        a for a in st.session_state.get("attempts", [])
+        if str(a.get("project_id") or "") == str(project_id)
+    ]
+
+
+class MemoryUpload:
+    """Minimal UploadedFile-compatible wrapper for files downloaded from project storage."""
+    def __init__(self, name: str, raw: bytes):
+        self.name = name
+        self._raw = raw
+
+    def getvalue(self):
+        return self._raw
+
+
+def reset_learning_screen_state(clear_materials: bool = True):
+    st.session_state.question = None
+    st.session_state.question_context = []
+    st.session_state.oral_eval = None
+    st.session_state.oral_eval_context = []
+    st.session_state.practice = None
+    st.session_state.practice_context = []
+    st.session_state.practice_eval = None
+    if clear_materials:
+        st.session_state.chunks = []
+        st.session_state.retriever = None
+        st.session_state.source_files = {}
+        st.session_state.current_project_files = []
+
+
+def set_current_project(project_id: str):
+    project = next((p for p in st.session_state.get("projects", []) if p["id"] == project_id), None)
+    st.session_state.current_project_id = project_id or ""
+    st.session_state.current_project_name = project["name"] if project else ""
+    st.session_state.weak_queue = rebuild_weak_queue(current_project_attempts())
+    if st.session_state.get("loaded_material_project_id") != project_id:
+        reset_learning_screen_state(clear_materials=True)
+        st.session_state.loaded_material_project_id = ""
+
+
+def load_current_project_materials(force: bool = False):
+    if not cloud_logged_in() or not st.session_state.get("current_project_id"):
+        return
+    project_id = st.session_state.current_project_id
+    if not force and st.session_state.get("loaded_material_project_id") == project_id:
+        return
+
+    files = load_project_files(
+        st.session_state.cloud_client,
+        st.session_state.cloud_user_id,
+        project_id,
+    )
+    page_records = []
+    source_files = {}
+    failed = []
+    for meta in files:
+        try:
+            raw = download_project_file(st.session_state.cloud_client, meta["storage_path"])
+            wrapped = MemoryUpload(meta["file_name"], raw)
+            page_records.extend(extract_uploaded_file(wrapped, meta["kind"]))
+            source_files[meta["file_name"]] = {
+                "raw": raw,
+                "suffix": meta["suffix"],
+                "kind": meta["kind"],
+            }
+        except Exception as e:
+            failed.append(f"{meta['file_name']}: {e}")
+
+    chunks = chunk_records(page_records)
+    st.session_state.current_project_files = files
+    st.session_state.chunks = chunks
+    st.session_state.retriever = LocalRetriever(chunks) if chunks else None
+    st.session_state.source_files = source_files
+    st.session_state.loaded_material_project_id = project_id
+    reset_learning_screen_state(clear_materials=False)
+    st.session_state.weak_queue = rebuild_weak_queue(current_project_attempts())
+    if failed:
+        st.warning("일부 프로젝트 파일을 불러오지 못했습니다: " + " / ".join(failed[:3]))
+
+
 def record_attempt(attempt: dict):
-    """Save locally, and to Supabase when the user is logged in."""
+    """Save the learning result under the selected project."""
     local_attempt = dict(attempt)
+    project_id = st.session_state.get("current_project_id", "")
+    local_attempt["project_id"] = project_id
 
     if cloud_logged_in():
-        try:
-            saved = save_attempt(
-                st.session_state.cloud_client,
-                st.session_state.cloud_user_id,
-                local_attempt,
-            )
-            st.session_state.attempts.append(saved)
-            return
-        except Exception as e:
-            st.warning(
-                "학습 기록을 클라우드에 저장하지 못했습니다. "
-                f"현재 세션에는 남아 있습니다. ({e})"
-            )
+        if not project_id:
+            st.warning("프로젝트가 선택되지 않아 학습 기록을 영구 저장하지 못했습니다.")
+        else:
+            try:
+                saved = save_attempt(
+                    st.session_state.cloud_client,
+                    st.session_state.cloud_user_id,
+                    project_id,
+                    local_attempt,
+                )
+                st.session_state.attempts.append(saved)
+                return
+            except Exception as e:
+                st.warning(
+                    "학습 기록을 클라우드에 저장하지 못했습니다. "
+                    f"현재 세션에는 남아 있습니다. ({e})"
+                )
 
     st.session_state.attempts.append(local_attempt)
 
@@ -131,12 +235,19 @@ def record_attempt(attempt: dict):
 def load_cloud_history():
     if not cloud_logged_in():
         return
-    attempts = load_attempts(
+    st.session_state.projects = load_projects(
         st.session_state.cloud_client,
         st.session_state.cloud_user_id,
     )
-    st.session_state.attempts = attempts
-    st.session_state.weak_queue = rebuild_weak_queue(attempts)
+    st.session_state.attempts = load_attempts(
+        st.session_state.cloud_client,
+        st.session_state.cloud_user_id,
+    )
+    valid_ids = {p["id"] for p in st.session_state.projects}
+    current = st.session_state.get("current_project_id", "")
+    if current not in valid_ids:
+        current = st.session_state.projects[0]["id"] if st.session_state.projects else ""
+    set_current_project(current)
     st.session_state.cloud_loaded = True
 
 
@@ -147,9 +258,11 @@ def clear_cloud_session():
     st.session_state.cloud_loaded = False
     st.session_state.attempts = []
     st.session_state.weak_queue = []
-    st.session_state.oral_eval = None
-    st.session_state.practice_eval = None
-
+    st.session_state.projects = []
+    st.session_state.current_project_id = ""
+    st.session_state.current_project_name = ""
+    st.session_state.loaded_material_project_id = ""
+    reset_learning_screen_state(clear_materials=True)
 
 def get_provider_config():
     provider = st.session_state.get("provider", "고려대 API Gateway")
@@ -395,6 +508,32 @@ with st.sidebar:
     else:
         st.info("학습 기록 저장 기능이 아직 연결되지 않았습니다. 현재는 브라우저 세션에만 저장됩니다.")
 
+    if cloud_logged_in():
+        st.divider()
+        st.markdown("### 현재 프로젝트")
+        if st.session_state.projects:
+            project_ids = [p["id"] for p in st.session_state.projects]
+            current_id = st.session_state.get("current_project_id", "")
+            if current_id not in project_ids:
+                current_id = project_ids[0]
+            selected_id = st.selectbox(
+                "과목 / 프로젝트",
+                project_ids,
+                index=project_ids.index(current_id),
+                format_func=lambda pid: next((p["name"] for p in st.session_state.projects if p["id"] == pid), pid),
+                key="project_switcher",
+            )
+            if selected_id != st.session_state.get("current_project_id", ""):
+                set_current_project(selected_id)
+                load_current_project_materials(force=True)
+                st.rerun()
+            elif st.session_state.get("loaded_material_project_id") != selected_id:
+                with st.spinner("프로젝트 자료를 불러오는 중..."):
+                    load_current_project_materials()
+            st.caption(f"현재: {st.session_state.current_project_name}")
+        else:
+            st.warning("먼저 '프로젝트' 탭에서 과목을 만들어 주세요.")
+
     st.divider()
     st.markdown("### AI 연결")
 
@@ -443,7 +582,8 @@ with st.sidebar:
     if st.session_state.chunks:
         lecture_count = sum(c["kind"] == "lecture" for c in st.session_state.chunks)
         exam_count = sum(c["kind"] == "exam" for c in st.session_state.chunks)
-        st.success(f"자료 준비 완료 · 강의 {lecture_count} chunks / 기출 {exam_count} chunks")
+        project_label = st.session_state.get("current_project_name") or "현재 세션"
+        st.success(f"{project_label} · 강의 {lecture_count} chunks / 기출 {exam_count} chunks")
     else:
         st.warning("아직 분석된 자료가 없습니다.")
 
@@ -452,11 +592,129 @@ st.title("AI 학습 도우미")
 st.write(
     "강의자료와 기출문제를 기반으로 **구술 질문 → 답변 평가 → 취약 개념 탐지 → 맞춤 문제 → 채점·피드백**을 반복하는 AI 학습 프로토타입입니다."
 )
-st.caption("앱 안에서 학습 ID로 로그인하면 점수·문제·취약 개념이 저장됩니다. AI API Key는 별도로 입력하며 저장하지 않습니다.")
+st.caption("과목별 프로젝트 안에 강의자료·기출·학습 기록·취약점을 분리해 저장합니다. AI API Key는 별도로 입력하며 저장하지 않습니다.")
 
-tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
-    ["1. 자료 등록", "2. 구술시험", "3. 맞춤 연습", "4. 학습 현황"]
+tab_projects, tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
+    ["0. 프로젝트", "1. 자료 등록", "2. 구술시험", "3. 맞춤 연습", "4. 학습 현황"]
 )
+
+
+# -------------------------
+# 0. Projects
+# -------------------------
+with tab_projects:
+    st.subheader("내 학습 프로젝트")
+    st.write("과목별로 강의자료, 기출문제, 학습 기록과 취약점을 분리해서 관리합니다.")
+
+    if not cloud_logged_in():
+        st.info("프로젝트를 저장하려면 왼쪽에서 학습 ID로 로그인해 주세요.")
+    else:
+        with st.form("new_project_form", clear_on_submit=True):
+            c1, c2 = st.columns([2, 3])
+            with c1:
+                new_project_name = st.text_input("새 프로젝트 이름", placeholder="예: 물리화학")
+            with c2:
+                new_project_desc = st.text_input("설명 (선택)", placeholder="예: 2학기 중간고사 대비")
+            create_clicked = st.form_submit_button("새 프로젝트 만들기", type="primary")
+        if create_clicked:
+            try:
+                created = create_project(
+                    st.session_state.cloud_client,
+                    st.session_state.cloud_user_id,
+                    new_project_name,
+                    new_project_desc,
+                )
+                st.session_state.projects = load_projects(
+                    st.session_state.cloud_client,
+                    st.session_state.cloud_user_id,
+                )
+                set_current_project(created["id"])
+                st.session_state.current_project_files = []
+                st.success(f"'{created['name']}' 프로젝트를 만들었습니다.")
+                st.rerun()
+            except Exception as e:
+                if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                    st.error("같은 이름의 프로젝트가 이미 있습니다.")
+                else:
+                    st.error(f"프로젝트 생성 실패: {e}")
+
+        if not st.session_state.projects:
+            st.info("아직 프로젝트가 없습니다. 첫 과목을 만들어 주세요.")
+        else:
+            st.markdown("### 프로젝트 목록")
+            for project in st.session_state.projects:
+                pa = [a for a in st.session_state.attempts if a.get("project_id") == project["id"]]
+                weak_counter = Counter()
+                for a in pa:
+                    weak_counter.update([x for x in (a.get("weak_concepts") or []) if x])
+                top_weak = ", ".join(x for x, _ in weak_counter.most_common(3)) or "아직 없음"
+                is_current = project["id"] == st.session_state.get("current_project_id")
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([3, 1, 1])
+                    with c1:
+                        st.markdown(f"### {'📂' if is_current else '📁'} {project['name']}")
+                        if project.get("description"):
+                            st.caption(project["description"])
+                        st.write(f"취약 개념: **{top_weak}**")
+                    with c2:
+                        st.metric("학습 기록", len(pa))
+                        if pa:
+                            st.caption(f"평균 {sum(a['score'] for a in pa)/len(pa):.1f}점")
+                    with c3:
+                        if not is_current and st.button("열기", key=f"open_project_{project['id']}", use_container_width=True):
+                            set_current_project(project["id"])
+                            with st.spinner("프로젝트 자료를 불러오는 중..."):
+                                load_current_project_materials(force=True)
+                            st.rerun()
+                        elif is_current:
+                            st.success("현재 프로젝트")
+
+            current = next((p for p in st.session_state.projects if p["id"] == st.session_state.current_project_id), None)
+            if current:
+                with st.expander("현재 프로젝트 이름/설명 수정 또는 삭제"):
+                    edit_name = st.text_input("프로젝트 이름", value=current["name"], key="edit_project_name")
+                    edit_desc = st.text_input("설명", value=current.get("description", ""), key="edit_project_desc")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("프로젝트 정보 저장", use_container_width=True):
+                            try:
+                                rename_project(
+                                    st.session_state.cloud_client,
+                                    st.session_state.cloud_user_id,
+                                    current["id"],
+                                    edit_name,
+                                    edit_desc,
+                                )
+                                st.session_state.projects = load_projects(
+                                    st.session_state.cloud_client,
+                                    st.session_state.cloud_user_id,
+                                )
+                                set_current_project(current["id"])
+                                st.success("프로젝트 정보를 수정했습니다.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"수정 실패: {e}")
+                    with c2:
+                        delete_confirm = st.checkbox("프로젝트 삭제에 동의", key="project_delete_confirm")
+                        if st.button("프로젝트 삭제", disabled=not delete_confirm, use_container_width=True):
+                            try:
+                                delete_project(
+                                    st.session_state.cloud_client,
+                                    st.session_state.cloud_user_id,
+                                    current["id"],
+                                )
+                                st.session_state.projects = load_projects(
+                                    st.session_state.cloud_client,
+                                    st.session_state.cloud_user_id,
+                                )
+                                next_id = st.session_state.projects[0]["id"] if st.session_state.projects else ""
+                                set_current_project(next_id)
+                                if next_id:
+                                    load_current_project_materials(force=True)
+                                st.success("프로젝트와 해당 학습 기록·파일을 삭제했습니다.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"프로젝트 삭제 실패: {e}")
 
 
 # -------------------------
@@ -464,7 +722,35 @@ tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
 # -------------------------
 with tab_upload:
     st.subheader("강의자료 / 기출문제 등록")
-    st.caption("PDF, PPTX, TXT, MD를 지원합니다. PDF는 AI 근거의 실제 페이지까지 확인할 수 있습니다. 스캔 이미지 PDF는 OCR이 없어 텍스트 추출이 안 될 수 있습니다.")
+    if cloud_logged_in() and not st.session_state.get("current_project_id"):
+        st.warning("먼저 0번 '프로젝트' 탭에서 과목/프로젝트를 만들어 주세요.")
+        st.stop()
+    if st.session_state.get("current_project_name"):
+        st.info(f"현재 프로젝트: **{st.session_state.current_project_name}** · 여기에 등록한 자료만 이 과목에서 사용됩니다.")
+    st.caption("PDF, PPTX, TXT, MD를 지원합니다. 로그인 상태에서는 업로드한 자료가 현재 프로젝트에 저장되어 다음 접속에서도 다시 불러와집니다.")
+
+    if cloud_logged_in() and st.session_state.get("current_project_id"):
+        saved_files = st.session_state.get("current_project_files", [])
+        if saved_files:
+            with st.expander(f"프로젝트에 저장된 자료 ({len(saved_files)}개)"):
+                for meta in saved_files:
+                    kind_label = "강의자료" if meta["kind"] == "lecture" else "기출문제"
+                    mb = meta.get("size_bytes", 0) / (1024 * 1024)
+                    c_name, c_del = st.columns([5, 1])
+                    with c_name:
+                        st.write(f"{kind_label} · **{meta['file_name']}** · {mb:.1f} MB")
+                    with c_del:
+                        if st.button("삭제", key=f"delete_file_{meta['id']}"):
+                            try:
+                                delete_project_file(
+                                    st.session_state.cloud_client,
+                                    st.session_state.cloud_user_id,
+                                    meta["id"],
+                                )
+                                load_current_project_materials(force=True)
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"파일 삭제 실패: {e}")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -518,6 +804,34 @@ with tab_upload:
                     st.session_state.chunks = chunks
                     st.session_state.retriever = LocalRetriever(chunks)
                     st.session_state.source_files = source_files
+
+                    if cloud_logged_in() and st.session_state.get("current_project_id"):
+                        try:
+                            for f in lecture_files or []:
+                                save_project_file(
+                                    st.session_state.cloud_client,
+                                    st.session_state.cloud_user_id,
+                                    st.session_state.current_project_id,
+                                    f.name,
+                                    "lecture",
+                                    f.getvalue(),
+                                )
+                            for f in exam_files or []:
+                                save_project_file(
+                                    st.session_state.cloud_client,
+                                    st.session_state.cloud_user_id,
+                                    st.session_state.current_project_id,
+                                    f.name,
+                                    "exam",
+                                    f.getvalue(),
+                                )
+                            # 기존 저장 자료 + 방금 업로드한 자료를 모두 다시 불러와
+                            # 현재 프로젝트의 검색 인덱스를 완전하게 재구성한다.
+                            st.session_state.loaded_material_project_id = ""
+                            load_current_project_materials(force=True)
+                        except Exception as e:
+                            st.warning(f"자료 분석은 완료됐지만 프로젝트 파일 저장 중 오류가 발생했습니다: {e}")
+
                     st.session_state.question = None
                     st.session_state.oral_eval = None
                     st.session_state.oral_eval_context = []
@@ -947,7 +1261,10 @@ with tab_dashboard:
             "로그인하면 이후 학습 기록을 영구 저장할 수 있습니다."
         )
 
-    attempts = list(st.session_state.get("attempts", []))
+    if st.session_state.get("current_project_name"):
+        st.info(f"현재 프로젝트 **{st.session_state.current_project_name}**의 학습 현황만 보여줍니다.")
+
+    attempts = current_project_attempts() if st.session_state.get("current_project_id") else list(st.session_state.get("attempts", []))
 
     if not attempts:
         st.info("아직 채점 기록이 없습니다. 구술시험이나 맞춤 문제를 풀면 여기에 누적됩니다.")
@@ -1003,25 +1320,29 @@ with tab_dashboard:
         )
 
         if cloud_logged_in():
-            st.caption("로그인 상태에서는 위 기록이 Supabase에 저장되어 있습니다.")
+            st.caption("로그인 상태에서는 현재 프로젝트의 기록만 아래에서 삭제할 수 있습니다.")
             delete_confirm = st.checkbox(
-                "저장된 학습 기록 전체 삭제에 동의합니다.",
+                "현재 프로젝트의 저장된 학습 기록 삭제에 동의합니다.",
                 key="delete_cloud_confirm",
             )
             if st.button(
-                "내 저장 기록 전체 삭제",
+                "현재 프로젝트 학습 기록 삭제",
                 disabled=not delete_confirm,
                 key="delete_cloud_records",
             ):
                 try:
-                    delete_all_attempts(
+                    delete_project_attempts(
                         st.session_state.cloud_client,
                         st.session_state.cloud_user_id,
+                        st.session_state.current_project_id,
                     )
-                    st.session_state.attempts = []
+                    st.session_state.attempts = [
+                        a for a in st.session_state.attempts
+                        if a.get("project_id") != st.session_state.current_project_id
+                    ]
                     st.session_state.weak_queue = []
                     st.session_state.ai_call_count = 0
-                    st.success("이 계정의 저장된 학습 기록을 모두 삭제했습니다.")
+                    st.success("현재 프로젝트의 학습 기록을 모두 삭제했습니다.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"저장 기록 삭제 실패: {e}")
@@ -1038,5 +1359,5 @@ st.divider()
 st.caption(
     "자료는 로컬에서 텍스트 추출/검색하고, AI는 [자료 N] 근거 번호를 함께 반환합니다. PDF는 해당 실제 페이지까지 확인할 수 있습니다. 계산 문제는 최종 답과 함께 PDF/사진 풀이를 제출해 과정까지 평가받을 수 있습니다. "
     "사용자의 AI API Key는 현재 세션에서만 사용하고 저장하지 않습니다. "
-    "Supabase 로그인을 사용하면 점수·문제·취약 개념만 사용자별로 영구 저장됩니다."
+    "로그인하면 과목별 프로젝트 안에 강의자료·기출문제·점수·문제·취약 개념이 분리되어 영구 저장됩니다."
 )
