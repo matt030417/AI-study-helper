@@ -115,10 +115,25 @@ PRACTICE_EVAL_SCHEMA = {
         "reason": {"type": "string"},
         "feedback": {"type": "string"},
         "weak_concepts": {"type": "array", "items": {"type": "string"}},
+        "work_readability": {
+            "type": "string",
+            "enum": ["clear", "partial", "unreadable", "not_provided"],
+        },
+        "work_assessment": {"type": "string"},
     },
-    "required": ["is_correct", "score", "error_type", "reason", "feedback", "weak_concepts"],
+    "required": [
+        "is_correct",
+        "score",
+        "error_type",
+        "reason",
+        "feedback",
+        "weak_concepts",
+        "work_readability",
+        "work_assessment",
+    ],
     "additionalProperties": False,
 }
+
 
 NUMERIC_FEEDBACK_SCHEMA = {
     "type": "object",
@@ -152,12 +167,20 @@ class AIEngine:
         self.client = OpenAI(**kwargs)
         self.model = model
 
-    def _structured(self, *, name: str, schema: dict, instructions: str, prompt: str) -> dict[str, Any]:
-        response = self.client.responses.create(
-            model=self.model,
-            instructions=instructions,
-            input=prompt,
-            text={
+    def _structured(
+        self,
+        *,
+        name: str,
+        schema: dict,
+        instructions: str,
+        prompt: str,
+        image_data_urls: list[str] | None = None,
+        image_labels: list[str] | None = None,
+    ) -> dict[str, Any]:
+        kwargs = {
+            "model": self.model,
+            "instructions": instructions,
+            "text": {
                 "format": {
                     "type": "json_schema",
                     "name": name,
@@ -165,9 +188,22 @@ class AIEngine:
                     "schema": schema,
                 }
             },
-            reasoning={"effort": "low"},
-            store=False,
-        )
+            "reasoning": {"effort": "low"},
+            "store": False,
+        }
+
+        if image_data_urls:
+            content = [{"type": "input_text", "text": prompt}]
+            labels = image_labels or []
+            for idx, image_url in enumerate(image_data_urls):
+                label = labels[idx] if idx < len(labels) else f"학생 풀이 이미지 {idx + 1}"
+                content.append({"type": "input_text", "text": f"[{label}]"})
+                content.append({"type": "input_image", "image_url": image_url})
+            kwargs["input"] = [{"role": "user", "content": content}]
+        else:
+            kwargs["input"] = prompt
+
+        response = self.client.responses.create(**kwargs)
         return json.loads(response.output_text)
 
     def generate_oral_question(
@@ -277,11 +313,28 @@ numeric_answer와 합리적인 절대오차 tolerance, expected_unit을 반드�
         student_answer: str,
         student_work: str,
         context: str,
+        solution_images: list[dict] | None = None,
+        numeric_check: dict | None = None,
     ) -> dict:
-        instructions = """당신은 학습용 문제 채점자다.
-정답 여부뿐 아니라 왜 맞거나 틀렸는지 설명한다.
+        instructions = """당신은 대학 시험의 학습용 채점자다.
+정답 여부뿐 아니라 풀이 과정이 논리적으로 타당한지 평가한다.
+학생이 제출한 풀이 이미지가 있으면 손글씨, 수식, 계산 순서를 직접 읽고 평가한다.
+이미지가 일부 흐리거나 읽기 어렵다면 추측해서 단정하지 말고 work_readability에 반영한다.
 표현만 다른 동치 답은 정답으로 인정한다.
-오답이면 오류 원인을 분류하고 다음에 무엇을 확인해야 하는지 구체적으로 피드백한다."""
+외부 수치 판정 결과가 제공된 경우 최종 수치의 정오 판정은 그 결과를 우선한다.
+최종 답이 맞더라도 풀이에 중대한 논리 오류가 있으면 score를 낮추고 명확히 설명한다.
+최종 답이 틀려도 식 설정과 핵심 개념이 맞으면 부분점수를 줄 수 있다.
+오답이면 가장 핵심적인 오류 유형을 분류하고, 다음에 무엇을 확인해야 하는지 구체적으로 피드백한다."""
+
+        numeric_text = "(외부 수치 판정 없음)"
+        if numeric_check is not None:
+            numeric_text = (
+                f"최종 수치 판정: {'정답' if numeric_check.get('is_correct') else '오답'}\n"
+                f"학생 해석 수치: {numeric_check.get('parsed')}\n"
+                f"기준 수치: {numeric_check.get('correct')}\n"
+                f"허용 오차: ±{numeric_check.get('tolerance')}\n"
+                f"기대 단위: {numeric_check.get('unit') or '(없음)'}"
+            )
 
         prompt = f"""[문제]
 {problem['problem']}
@@ -292,21 +345,29 @@ numeric_answer와 합리적인 절대오차 tolerance, expected_unit을 반드�
 [기준 풀이]
 {problem['solution']}
 
-[학생 답]
+[학생 최종 답]
 {student_answer}
 
-[학생 풀이]
-{student_work or "(풀이 미입력)"}
+[학생이 타이핑한 풀이]
+{student_work or "(타이핑 풀이 미입력)"}
 
-[관련 자료]
+[외부 수치 판정]
+{numeric_text}
+
+[관련 강의자료]
 {context}
 
-학생 답을 평가하라."""
+학생 풀이 이미지가 뒤에 첨부되어 있다면 반드시 함께 읽어서 평가하라.
+풀이 이미지가 없다면 타이핑된 풀이만으로 평가하라."""
+
+        images = solution_images or []
         return self._structured(
             name="practice_evaluation",
             schema=PRACTICE_EVAL_SCHEMA,
             instructions=instructions,
             prompt=prompt,
+            image_data_urls=[x["data_url"] for x in images] if images else None,
+            image_labels=[x["label"] for x in images] if images else None,
         )
 
     def explain_numeric_error(
