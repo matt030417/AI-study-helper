@@ -317,7 +317,7 @@ with st.sidebar:
 
             account_username = st.text_input(
                 "학습 ID",
-                placeholder="예: minseok03",
+                placeholder="예: kuac1",
                 key="account_username",
                 help="영문 소문자, 숫자, ., _, - 를 사용할 수 있습니다.",
             )
