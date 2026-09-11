@@ -9,6 +9,15 @@ import pandas as pd
 import streamlit as st
 
 from ai_engine import AIEngine
+from cloud_storage import (
+    delete_all_attempts,
+    load_attempts,
+    normalize_username,
+    save_attempt,
+    sign_in,
+    sign_out,
+    sign_up,
+)
 from document_engine import (
     LocalRetriever,
     chunk_records,
@@ -47,6 +56,10 @@ DEFAULTS = {
     "ai_call_count": 0,
     "attempts": [],
     "source_files": {},
+    "cloud_client": None,
+    "cloud_user_id": "",
+    "cloud_username": "",
+    "cloud_loaded": False,
 }
 for key, value in DEFAULTS.items():
     if key not in st.session_state:
@@ -58,6 +71,84 @@ def _secret(name: str, default=""):
         return st.secrets.get(name, default)
     except Exception:
         return default
+
+
+
+def cloud_config():
+    return {
+        "url": str(_secret("SUPABASE_URL", "")).strip(),
+        "key": str(_secret("SUPABASE_KEY", "")).strip(),
+    }
+
+
+def cloud_enabled() -> bool:
+    cfg = cloud_config()
+    return bool(cfg["url"] and cfg["key"])
+
+
+def cloud_logged_in() -> bool:
+    return bool(
+        st.session_state.get("cloud_client")
+        and st.session_state.get("cloud_user_id")
+    )
+
+
+def rebuild_weak_queue(attempts: list[dict]) -> list[str]:
+    """Prioritize recent weaknesses when a returning user logs back in."""
+    seen = set()
+    ordered = []
+    for attempt in reversed(attempts):
+        for concept in attempt.get("weak_concepts") or []:
+            concept = str(concept).strip()
+            if concept and concept not in seen:
+                seen.add(concept)
+                ordered.append(concept)
+    return ordered[:20]
+
+
+def record_attempt(attempt: dict):
+    """Save locally, and to Supabase when the user is logged in."""
+    local_attempt = dict(attempt)
+
+    if cloud_logged_in():
+        try:
+            saved = save_attempt(
+                st.session_state.cloud_client,
+                st.session_state.cloud_user_id,
+                local_attempt,
+            )
+            st.session_state.attempts.append(saved)
+            return
+        except Exception as e:
+            st.warning(
+                "학습 기록을 클라우드에 저장하지 못했습니다. "
+                f"현재 세션에는 남아 있습니다. ({e})"
+            )
+
+    st.session_state.attempts.append(local_attempt)
+
+
+def load_cloud_history():
+    if not cloud_logged_in():
+        return
+    attempts = load_attempts(
+        st.session_state.cloud_client,
+        st.session_state.cloud_user_id,
+    )
+    st.session_state.attempts = attempts
+    st.session_state.weak_queue = rebuild_weak_queue(attempts)
+    st.session_state.cloud_loaded = True
+
+
+def clear_cloud_session():
+    st.session_state.cloud_client = None
+    st.session_state.cloud_user_id = ""
+    st.session_state.cloud_username = ""
+    st.session_state.cloud_loaded = False
+    st.session_state.attempts = []
+    st.session_state.weak_queue = []
+    st.session_state.oral_eval = None
+    st.session_state.practice_eval = None
 
 
 def get_provider_config():
@@ -203,6 +294,110 @@ with st.sidebar:
     st.title("🎓 AI 학습 도우미")
     st.caption("강의자료 기반 구술시험 → 약점 탐지 → 맞춤 문제 → 피드백")
 
+    st.markdown("### 학습 기록 계정")
+    if cloud_enabled():
+        if cloud_logged_in():
+            st.success(f"로그인됨 · {st.session_state.cloud_username}")
+            st.caption("점수·문제·취약 개념은 이 학습 ID에 저장됩니다.")
+            if st.button("로그아웃", use_container_width=True, key="cloud_logout"):
+                try:
+                    sign_out(st.session_state.cloud_client)
+                except Exception:
+                    pass
+                clear_cloud_session()
+                st.rerun()
+        else:
+            auth_mode = st.radio(
+                "계정",
+                ["로그인", "처음 사용하기"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="auth_mode",
+            )
+
+            account_username = st.text_input(
+                "학습 ID",
+                placeholder="예: minseok03",
+                key="account_username",
+                help="영문 소문자, 숫자, ., _, - 를 사용할 수 있습니다.",
+            )
+            account_password = st.text_input(
+                "비밀번호",
+                type="password",
+                placeholder="6자 이상",
+                key="account_password",
+            )
+
+            if auth_mode == "로그인":
+                if st.button("로그인", use_container_width=True, key="cloud_login"):
+                    if not account_username.strip() or not account_password:
+                        st.warning("학습 ID와 비밀번호를 입력해 주세요.")
+                    else:
+                        cfg = cloud_config()
+                        try:
+                            username = normalize_username(account_username)
+                            client, response = sign_in(
+                                cfg["url"],
+                                cfg["key"],
+                                username,
+                                account_password,
+                            )
+                            if not response.user:
+                                raise RuntimeError("사용자 정보를 받지 못했습니다.")
+                            st.session_state.cloud_client = client
+                            st.session_state.cloud_user_id = str(response.user.id)
+                            st.session_state.cloud_username = username
+                            load_cloud_history()
+                            st.success("이전 학습 기록을 불러왔습니다.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(
+                                "로그인에 실패했습니다. 학습 ID와 비밀번호를 확인해 주세요."
+                            )
+                            st.caption(f"상세 오류: {e}")
+            else:
+                st.caption("별도 사이트 가입 없이 이 앱 안에서 바로 학습 계정을 만듭니다.")
+                if st.button("학습 계정 만들기", use_container_width=True, key="cloud_signup"):
+                    if not account_username.strip() or len(account_password) < 6:
+                        st.warning("학습 ID와 6자 이상의 비밀번호를 입력해 주세요.")
+                    else:
+                        cfg = cloud_config()
+                        try:
+                            username = normalize_username(account_username)
+                            client, response = sign_up(
+                                cfg["url"],
+                                cfg["key"],
+                                username,
+                                account_password,
+                            )
+                            if response.session and response.user:
+                                st.session_state.cloud_client = client
+                                st.session_state.cloud_user_id = str(response.user.id)
+                                st.session_state.cloud_username = username
+                                st.session_state.attempts = []
+                                st.session_state.weak_queue = []
+                                st.session_state.cloud_loaded = True
+                                st.success("학습 계정이 만들어졌습니다.")
+                                st.rerun()
+                            else:
+                                st.warning(
+                                    "계정은 생성됐지만 바로 로그인되지 않았습니다. "
+                                    "관리자가 Supabase의 이메일 확인 기능을 꺼야 이 앱의 간단 로그인 방식이 정상 동작합니다."
+                                )
+                        except Exception as e:
+                            message = str(e).lower()
+                            if "already" in message or "registered" in message or "exists" in message:
+                                st.error("이미 사용 중인 학습 ID입니다. 다른 ID를 선택해 주세요.")
+                            else:
+                                st.error(f"학습 계정 생성 실패: {e}")
+
+        st.caption("※ 비밀번호 인증은 서버의 인증 시스템이 처리하며, AI API Key와는 별개입니다.")
+    else:
+        st.info("학습 기록 저장 기능이 아직 연결되지 않았습니다. 현재는 브라우저 세션에만 저장됩니다.")
+
+    st.divider()
+    st.markdown("### AI 연결")
+
     st.session_state.provider = st.selectbox(
         "AI 제공자",
         ["고려대 API Gateway", "OpenAI API"],
@@ -257,7 +452,7 @@ st.title("AI 학습 도우미")
 st.write(
     "강의자료와 기출문제를 기반으로 **구술 질문 → 답변 평가 → 취약 개념 탐지 → 맞춤 문제 → 채점·피드백**을 반복하는 AI 학습 프로토타입입니다."
 )
-st.caption("공개 링크로 접속한 뒤 각 사용자가 자신의 API Key를 입력해 사용합니다. 다른 사용자의 크레딧이나 학습 기록과 섞이지 않습니다.")
+st.caption("앱 안에서 학습 ID로 로그인하면 점수·문제·취약 개념이 저장됩니다. AI API Key는 별도로 입력하며 저장하지 않습니다.")
 
 tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
     ["1. 자료 등록", "2. 구술시험", "3. 맞춤 연습", "4. 학습 현황"]
@@ -328,7 +523,9 @@ with tab_upload:
                     st.session_state.oral_eval_context = []
                     st.session_state.practice = None
                     st.session_state.practice_eval = None
-                    st.session_state.weak_queue = []
+                    # 로그인 사용자의 과거 취약 개념은 유지한다.
+                    if not cloud_logged_in():
+                        st.session_state.weak_queue = []
                     st.success(f"완료: {len(page_records)}개 페이지/슬라이드 → {len(chunks)}개 학습 chunk")
                 else:
                     st.error("추출된 텍스트가 없습니다. 스캔 PDF라면 텍스트 PDF로 변환해 주세요.")
@@ -431,7 +628,7 @@ with tab_oral:
                             for wc in ev["weak_concepts"]:
                                 if wc not in st.session_state.weak_queue:
                                     st.session_state.weak_queue.append(wc)
-                            st.session_state.attempts.append({
+                            record_attempt({
                                 "created_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "stage": "oral",
                                 "concept": ", ".join(q["target_concepts"]),
@@ -440,6 +637,7 @@ with tab_oral:
                                 "error_type": ev["error_type"],
                                 "question": q["question"],
                                 "student_answer": oral_answer,
+                                "submitted_work_file": False,
                                 "feedback": ev["feedback"],
                                 "weak_concepts": ev["weak_concepts"],
                             })
@@ -682,7 +880,7 @@ with tab_practice:
                                 if wc not in st.session_state.weak_queue:
                                     st.session_state.weak_queue.append(wc)
 
-                            st.session_state.attempts.append({
+                            record_attempt({
                                 "created_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "stage": "practice",
                                 "concept": problem["concept"],
@@ -738,7 +936,16 @@ with tab_practice:
 # -------------------------
 with tab_dashboard:
     st.subheader("학습 현황")
-    st.caption("이 기록은 현재 사용자의 브라우저 세션에만 유지되며 다른 사용자와 공유되지 않습니다.")
+    if cloud_logged_in():
+        st.caption(
+            f"☁️ 학습 ID {st.session_state.cloud_username}의 기록입니다. "
+            "다른 기기에서 같은 계정으로 로그인해도 다시 불러옵니다."
+        )
+    else:
+        st.caption(
+            "현재 로그인하지 않아 이 기록은 브라우저 세션에만 유지됩니다. "
+            "로그인하면 이후 학습 기록을 영구 저장할 수 있습니다."
+        )
 
     attempts = list(st.session_state.get("attempts", []))
 
@@ -795,16 +1002,41 @@ with tab_dashboard:
             hide_index=True,
         )
 
-        if st.button("현재 학습 기록 초기화"):
-            st.session_state.attempts = []
-            st.session_state.weak_queue = []
-            st.session_state.ai_call_count = 0
-            st.success("현재 브라우저 세션의 학습 기록을 초기화했습니다.")
-            st.rerun()
+        if cloud_logged_in():
+            st.caption("로그인 상태에서는 위 기록이 Supabase에 저장되어 있습니다.")
+            delete_confirm = st.checkbox(
+                "저장된 학습 기록 전체 삭제에 동의합니다.",
+                key="delete_cloud_confirm",
+            )
+            if st.button(
+                "내 저장 기록 전체 삭제",
+                disabled=not delete_confirm,
+                key="delete_cloud_records",
+            ):
+                try:
+                    delete_all_attempts(
+                        st.session_state.cloud_client,
+                        st.session_state.cloud_user_id,
+                    )
+                    st.session_state.attempts = []
+                    st.session_state.weak_queue = []
+                    st.session_state.ai_call_count = 0
+                    st.success("이 계정의 저장된 학습 기록을 모두 삭제했습니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"저장 기록 삭제 실패: {e}")
+        else:
+            if st.button("현재 세션 학습 기록 초기화"):
+                st.session_state.attempts = []
+                st.session_state.weak_queue = []
+                st.session_state.ai_call_count = 0
+                st.success("현재 브라우저 세션의 학습 기록을 초기화했습니다.")
+                st.rerun()
 
 
 st.divider()
 st.caption(
     "자료는 로컬에서 텍스트 추출/검색하고, AI는 [자료 N] 근거 번호를 함께 반환합니다. PDF는 해당 실제 페이지까지 확인할 수 있습니다. 계산 문제는 최종 답과 함께 PDF/사진 풀이를 제출해 과정까지 평가받을 수 있습니다. "
-    "사용자의 API Key는 현재 세션에서만 사용하며, 앱은 학습 기록을 서버 DB에 저장하지 않습니다."
+    "사용자의 AI API Key는 현재 세션에서만 사용하고 저장하지 않습니다. "
+    "Supabase 로그인을 사용하면 점수·문제·취약 개념만 사용자별로 영구 저장됩니다."
 )
