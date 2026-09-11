@@ -6,3 +6,5 @@ scikit-learn>=1.5
 pandas>=2.2
 
 Pillow>=10.4
+
+supabase>=2.15,<3
