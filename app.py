@@ -405,7 +405,7 @@ def show_evidence(items: list[dict], evidence_ids=None, title: str = "근거 자
 # -------------------------
 with st.sidebar:
     st.title("🎓 AI 학습 도우미")
-    st.caption("강의자료 기반 구술시험 → 약점 탐지 → 맞춤 문제 → 피드백")
+    st.caption("강의자료 기반 개념 확인 → 약점 탐지 → 맞춤 문제 → 피드백")
 
     st.markdown("### 학습 기록 계정")
     if cloud_enabled():
@@ -595,7 +595,7 @@ st.write(
 st.caption("과목별 프로젝트 안에 강의자료·기출·학습 기록·취약점을 분리해 저장합니다. AI API Key는 별도로 입력하며 저장하지 않습니다.")
 
 tab_projects, tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
-    ["0. 프로젝트", "1. 자료 등록", "2. 구술시험", "3. 맞춤 연습", "4. 학습 현황"]
+    ["프로젝트 설정", "자료 등록", "개념 확인", "맞춤 문제", "학습 현황"]
 )
 
 
@@ -858,7 +858,7 @@ with tab_upload:
 # 2. Oral exam
 # -------------------------
 with tab_oral:
-    st.subheader("AI 구술시험")
+    st.subheader("개념 확인")
 
     if not st.session_state.chunks:
         st.info("먼저 1번 탭에서 자료를 등록해 주세요.")
@@ -992,14 +992,14 @@ with tab_oral:
             with st.expander("모범 답안 확인"):
                 st.write(ev["ideal_answer"])
 
-            st.caption("취약 개념은 자동으로 3번 '맞춤 연습' 탭에 연결됩니다.")
+            st.caption("확인된 취약 개념은 자동으로 '맞춤 문제' 탭에 연결됩니다.")
 
 
 # -------------------------
 # 3. Practice
 # -------------------------
 with tab_practice:
-    st.subheader("취약 개념 맞춤 연습")
+    st.subheader("취약 개념 맞춤 문제")
 
     if not st.session_state.chunks:
         st.info("먼저 자료를 등록해 주세요.")
@@ -1012,7 +1012,7 @@ with tab_practice:
             weak_concept = st.text_input(
                 "연습할 개념",
                 value=default_concept,
-                placeholder="구술시험에서 찾은 취약 개념 또는 직접 입력",
+                placeholder="개념 확인에서 찾은 취약 개념 또는 직접 입력",
             )
         with p2:
             desired_type = st.selectbox("문제 유형", ["자동", "개념 문제", "계산 문제"])
@@ -1267,7 +1267,7 @@ with tab_dashboard:
     attempts = current_project_attempts() if st.session_state.get("current_project_id") else list(st.session_state.get("attempts", []))
 
     if not attempts:
-        st.info("아직 채점 기록이 없습니다. 구술시험이나 맞춤 문제를 풀면 여기에 누적됩니다.")
+        st.info("아직 채점 기록이 없습니다. 개념 확인이나 맞춤 문제를 진행하면 여기에 누적됩니다.")
     else:
         df = pd.DataFrame(attempts)
         # 최신 기록이 위로 오도록 표시
