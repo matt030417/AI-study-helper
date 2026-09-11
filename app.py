@@ -17,6 +17,7 @@ from document_engine import (
     reference_labels,
     render_pdf_page_png,
     select_evidence,
+    solution_file_to_images,
     source_location,
 )
 
@@ -120,8 +121,13 @@ def safe_api_call(fn, *args, **kwargs):
         st.error(f"AI 호출 중 오류가 발생했습니다: {message}")
         if "credit_balance_exhausted" in message or "insufficient_quota" in message:
             st.warning("OpenAI API 크레딧이 없습니다. 앱 배포와 화면 사용은 가능하지만 AI 생성 기능은 크레딧 충전 후 작동합니다.")
+        elif any(token in message.lower() for token in ["image", "vision", "multimodal", "input_image"]):
+            st.warning(
+                "현재 선택한 모델 또는 API Gateway가 이미지 입력을 지원하지 않을 수 있습니다. "
+                "이미지 입력이 가능한 모델인지 확인하거나 풀이를 텍스트로 입력해 주세요."
+            )
         else:
-            st.info("배포 Secret의 API Key, 모델 이름, 네트워크 상태를 확인해 주세요.")
+            st.info("API Key, 모델 이름, API Gateway 상태를 확인해 주세요.")
         return None
 
 
@@ -547,11 +553,43 @@ with tab_practice:
                 key="practice_final",
             )
             student_work = st.text_area(
-                "풀이 과정 / 설명 (권장)",
-                height=150,
-                placeholder="틀렸을 때 정확한 피드백을 받으려면 풀이 과정을 적어 주세요.",
+                "풀이 과정 / 설명 (선택)",
+                height=130,
+                placeholder="타이핑이 편한 부분만 적어도 됩니다. 손글씨 풀이는 아래에서 PDF/사진으로 제출할 수 있습니다.",
                 key="practice_work",
             )
+
+            problem_key = hashlib.md5(problem["problem"].encode("utf-8")).hexdigest()[:10]
+            solution_file = st.file_uploader(
+                "손글씨 풀이 PDF / 사진 제출 (선택)",
+                type=["pdf", "jpg", "jpeg", "png"],
+                accept_multiple_files=False,
+                key=f"practice_solution_{problem_key}",
+                help="PDF는 앞 3페이지만 AI가 읽습니다. JPG/PNG 사진도 지원합니다.",
+            )
+
+            solution_images = []
+            if solution_file is not None:
+                try:
+                    solution_images = solution_file_to_images(solution_file, max_pages=3)
+                    st.success(
+                        f"풀이 파일 인식 완료 · {len(solution_images)}페이지/이미지"
+                        + (" (PDF는 최대 3페이지)" if solution_file.name.lower().endswith(".pdf") else "")
+                    )
+                    st.caption(
+                        "채점 시 이 이미지가 AI 모델에 전송되어 수식·손글씨·계산 과정을 함께 평가합니다. "
+                        "이미지 분석을 사용하면 텍스트만 채점할 때보다 API 크레딧이 조금 더 들 수 있습니다."
+                    )
+                    with st.expander("제출한 풀이 미리보기"):
+                        for img in solution_images:
+                            st.image(
+                                img["jpeg_bytes"],
+                                caption=img["label"],
+                                use_container_width=True,
+                            )
+                except Exception as e:
+                    st.error(f"풀이 파일을 읽지 못했습니다: {e}")
+                    solution_images = []
 
             if st.button("채점하기", key="grade_practice"):
                 if not student_final.strip():
@@ -565,6 +603,7 @@ with tab_practice:
                             parsed = parse_number(student_final)
                             if parsed is None:
                                 st.warning("최종 답에서 숫자를 인식하지 못했습니다. 예: 16.4 kPa")
+                                pe = None
                             else:
                                 correct = float(problem["numeric_answer"])
                                 tol = problem["numeric_tolerance"]
@@ -573,17 +612,38 @@ with tab_practice:
                                 tol = float(tol)
                                 is_correct = abs(parsed - correct) <= tol
 
-                                if is_correct:
+                                # 풀이 이미지/텍스트가 있으면 정답 여부와 별개로 AI가 과정을 평가한다.
+                                if solution_images or student_work.strip():
+                                    numeric_check = {
+                                        "is_correct": is_correct,
+                                        "parsed": parsed,
+                                        "correct": correct,
+                                        "tolerance": tol,
+                                        "unit": problem.get("expected_unit"),
+                                    }
+                                    with st.spinner("최종 답과 제출한 풀이 과정을 함께 읽어 채점하는 중..."):
+                                        pe = safe_api_call(
+                                            engine.evaluate_practice_answer,
+                                            problem,
+                                            student_final,
+                                            student_work,
+                                            ctx,
+                                            solution_images,
+                                            numeric_check,
+                                        )
+                                elif is_correct:
                                     pe = {
                                         "is_correct": True,
                                         "score": 100,
                                         "error_type": "none",
                                         "reason": f"수치가 허용 오차 ±{tol:g} 범위 안에 있습니다.",
-                                        "feedback": "정답입니다. 풀이 과정에서 사용한 식과 단위까지 다시 확인하면 더 안정적으로 기억할 수 있습니다.",
+                                        "feedback": "정답입니다. 풀이 PDF/사진을 함께 제출하면 계산 과정까지 평가받을 수 있습니다.",
                                         "weak_concepts": [],
+                                        "work_readability": "not_provided",
+                                        "work_assessment": "풀이 과정이 제출되지 않아 최종 수치만 판정했습니다.",
                                     }
                                 else:
-                                    with st.spinner("정답 판정 완료. 틀린 이유를 풀이 과정과 비교하는 중..."):
+                                    with st.spinner("정답 판정 완료. 틀린 이유를 분석하는 중..."):
                                         nf = safe_api_call(
                                             engine.explain_numeric_error,
                                             problem,
@@ -601,15 +661,19 @@ with tab_practice:
                                             "reason": nf["reason"],
                                             "feedback": nf["feedback"],
                                             "weak_concepts": nf["weak_concepts"],
+                                            "work_readability": "not_provided" if not student_work.strip() else "clear",
+                                            "work_assessment": "이미지 풀이가 제출되지 않아 입력된 텍스트 풀이만 참고했습니다.",
                                         }
                         else:
-                            with st.spinner("답안을 강의자료 기준으로 채점하는 중..."):
+                            with st.spinner("답안과 제출한 풀이 과정을 강의자료 기준으로 채점하는 중..."):
                                 pe = safe_api_call(
                                     engine.evaluate_practice_answer,
                                     problem,
                                     student_final,
                                     student_work,
                                     ctx,
+                                    solution_images,
+                                    None,
                                 )
 
                         if pe:
@@ -627,19 +691,35 @@ with tab_practice:
                                 "error_type": pe["error_type"],
                                 "question": problem["problem"],
                                 "student_answer": student_final,
+                                "submitted_work_file": bool(solution_images),
                                 "feedback": pe["feedback"],
                                 "weak_concepts": pe["weak_concepts"],
                             })
 
         pe = st.session_state.practice_eval
         if pe:
-            if pe["is_correct"]:
+            if pe["is_correct"] and pe["score"] >= 95:
                 st.success(f"✅ 정답입니다 · {pe['score']}점")
+            elif pe["is_correct"]:
+                st.success(f"✅ 최종 답은 정답 · 풀이 평가 {pe['score']}점")
             else:
-                st.error(f"❌ 오답입니다 · {pe['score']}점")
+                st.error(f"❌ 최종 답은 오답 · 풀이 포함 {pe['score']}점")
 
             st.markdown("**판정 이유**")
             st.write(pe["reason"])
+
+            if pe.get("work_assessment"):
+                st.markdown("**풀이 과정 평가**")
+                readability = pe.get("work_readability", "not_provided")
+                readability_label = {
+                    "clear": "명확하게 인식됨",
+                    "partial": "일부만 인식됨",
+                    "unreadable": "읽기 어려움",
+                    "not_provided": "제출되지 않음",
+                }.get(readability, readability)
+                st.caption(f"풀이 인식 상태: {readability_label}")
+                st.write(pe["work_assessment"])
+
             st.markdown("**피드백**")
             st.write(pe["feedback"])
 
@@ -725,6 +805,6 @@ with tab_dashboard:
 
 st.divider()
 st.caption(
-    "자료는 로컬에서 텍스트 추출/검색하고, AI는 [자료 N] 근거 번호를 함께 반환합니다. PDF는 해당 실제 페이지까지 확인할 수 있습니다. "
+    "자료는 로컬에서 텍스트 추출/검색하고, AI는 [자료 N] 근거 번호를 함께 반환합니다. PDF는 해당 실제 페이지까지 확인할 수 있습니다. 계산 문제는 최종 답과 함께 PDF/사진 풀이를 제출해 과정까지 평가받을 수 있습니다. "
     "사용자의 API Key는 현재 세션에서만 사용하며, 앱은 학습 기록을 서버 DB에 저장하지 않습니다."
 )
