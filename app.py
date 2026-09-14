@@ -419,6 +419,298 @@ st.markdown(
             display: none;
         }
     }
+
+
+    /* =========================================================
+       Dark mode support
+       ========================================================= */
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --kuac-red: #ef536a;
+            --kuac-red-dark: #ff6f83;
+            --kuac-red-soft: #34171d;
+            --kuac-ink: #f4f5f7;
+            --kuac-muted: #b6bcc8;
+            --kuac-line: #343841;
+            --kuac-panel: #1d2027;
+        }
+
+        html, body,
+        [data-testid="stAppViewContainer"] {
+            color: #f3f4f6 !important;
+        }
+
+        [data-testid="stAppViewContainer"] {
+            background:
+                radial-gradient(circle at 82% 6%, rgba(239,83,106,.08), transparent 22rem),
+                linear-gradient(180deg, #111318 0%, #15171d 100%) !important;
+        }
+
+        .main .block-container {
+            color: #f3f4f6 !important;
+        }
+
+        /* Sidebar */
+        [data-testid="stSidebar"] {
+            background: #15181e !important;
+            border-right-color: #2d3139 !important;
+        }
+
+        [data-testid="stSidebar"] * {
+            color: #f2f3f5;
+        }
+
+        .kuac-side-title {
+            color: #ffffff !important;
+        }
+
+        .kuac-side-subtitle,
+        [data-testid="stSidebar"] .stCaption {
+            color: #aeb4bf !important;
+        }
+
+        .kuac-side-note {
+            background: linear-gradient(135deg, #25181b, #211e1b) !important;
+            border-color: #473438 !important;
+            color: #d8dbe1 !important;
+        }
+
+        .kuac-side-note strong {
+            color: #ff7084 !important;
+        }
+
+        /* Hero */
+        .kuac-hero {
+            background:
+                linear-gradient(116deg, #1a1d23 0%, #20191c 58%, #2a171d 100%) !important;
+            border-color: #393037 !important;
+            box-shadow: 0 12px 34px rgba(0,0,0,.28) !important;
+        }
+
+        .kuac-hero h1 {
+            color: #f7f7f8 !important;
+        }
+
+        .kuac-hero h1 span,
+        .kuac-eyebrow,
+        .kuac-brandline strong {
+            color: #ff6279 !important;
+        }
+
+        .kuac-brandline,
+        .kuac-hero-desc {
+            color: #c2c7d0 !important;
+        }
+
+        .kuac-chip {
+            background: rgba(37,40,47,.9) !important;
+            border-color: #3b3f47 !important;
+            color: #eceef1 !important;
+            box-shadow: 0 3px 10px rgba(0,0,0,.16) !important;
+        }
+
+        .kuac-chip b {
+            color: #ff6f83 !important;
+        }
+
+        .kuac-hero-quote {
+            color: #ff8293 !important;
+        }
+
+        .kuac-hero-quote small {
+            color: #c89ba3 !important;
+        }
+
+        /* Tabs */
+        .stTabs [data-baseweb="tab-list"] {
+            background: #1b1e24 !important;
+            border-color: #343840 !important;
+            box-shadow: 0 5px 18px rgba(0,0,0,.18) !important;
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            color: #d4d7dd !important;
+        }
+
+        .stTabs [data-baseweb="tab"]:hover {
+            background: #2b1b20 !important;
+            color: #ff7084 !important;
+        }
+
+        .stTabs [aria-selected="true"] {
+            background: #321a20 !important;
+            color: #ff7084 !important;
+            box-shadow: inset 0 -3px 0 #ef536a !important;
+        }
+
+        /* Streamlit cards, expanders, forms */
+        [data-testid="stVerticalBlockBorderWrapper"] {
+            background: #1b1e24 !important;
+            border-color: #343840 !important;
+            box-shadow: 0 6px 20px rgba(0,0,0,.14) !important;
+        }
+
+        [data-testid="stExpander"] {
+            background: #1b1e24 !important;
+            border-color: #343840 !important;
+        }
+
+        /* Headings / text */
+        h1, h2, h3, h4, h5, h6,
+        p, label,
+        [data-testid="stMarkdownContainer"],
+        [data-testid="stText"],
+        [data-testid="stMetricLabel"],
+        [data-testid="stMetricValue"] {
+            color: #f0f2f5;
+        }
+
+        [data-testid="stCaptionContainer"],
+        .stCaption {
+            color: #aeb4bf !important;
+        }
+
+        /* Inputs */
+        .stTextInput input,
+        .stTextArea textarea,
+        .stSelectbox [data-baseweb="select"] > div,
+        .stNumberInput input {
+            background: #20232a !important;
+            color: #f6f7f8 !important;
+            border-color: #3a3e47 !important;
+        }
+
+        .stTextInput input::placeholder,
+        .stTextArea textarea::placeholder {
+            color: #8e95a1 !important;
+        }
+
+        .stTextInput input:focus,
+        .stTextArea textarea:focus {
+            border-color: #ef536a !important;
+            box-shadow: 0 0 0 1px #ef536a !important;
+        }
+
+        /* Uploaders */
+        [data-testid="stFileUploader"] section {
+            background: #1f2229 !important;
+            border-color: #3b3f48 !important;
+        }
+
+        [data-testid="stFileUploader"] section * {
+            color: #e5e7eb !important;
+        }
+
+        /* Buttons */
+        .stButton > button:not([kind="primary"]),
+        .stFormSubmitButton > button:not([kind="primary"]) {
+            background: #24272e !important;
+            color: #eceef2 !important;
+            border-color: #41454f !important;
+        }
+
+        .stButton > button:not([kind="primary"]):hover,
+        .stFormSubmitButton > button:not([kind="primary"]):hover {
+            background: #30343c !important;
+            border-color: #565b66 !important;
+            color: #ffffff !important;
+        }
+
+        .stButton > button[kind="primary"],
+        .stFormSubmitButton > button[kind="primary"] {
+            background: linear-gradient(90deg, #be203b, #e13b58) !important;
+            color: #ffffff !important;
+        }
+
+        /* Alerts */
+        [data-testid="stAlert"] {
+            color: #eef0f3 !important;
+        }
+
+        /* Logged-out landing cards */
+        .kuac-landing-title {
+            color: #f5f6f7 !important;
+        }
+
+        .kuac-landing-sub {
+            color: #aeb4bf !important;
+        }
+
+        .kuac-feature-card {
+            background: #1b1e24 !important;
+            border-color: #343840 !important;
+            box-shadow: 0 6px 20px rgba(0,0,0,.15) !important;
+        }
+
+        .kuac-feature-card.red {
+            background: linear-gradient(145deg, #29191d, #1c1f25) !important;
+        }
+
+        .kuac-feature-card.blue {
+            background: linear-gradient(145deg, #192230, #1c1f25) !important;
+        }
+
+        .kuac-feature-card.green {
+            background: linear-gradient(145deg, #19271f, #1c1f25) !important;
+        }
+
+        .kuac-feature-card.purple {
+            background: linear-gradient(145deg, #241c2d, #1c1f25) !important;
+        }
+
+        .kuac-feature-card h4 {
+            color: #f5f6f7 !important;
+        }
+
+        .kuac-feature-card p {
+            color: #b7bcc6 !important;
+        }
+
+        .kuac-feature-icon {
+            background: #341b21 !important;
+            color: #ff7084 !important;
+        }
+
+        .kuac-login-callout {
+            background: linear-gradient(100deg, #24181b, #1b1e24) !important;
+            border-color: #443136 !important;
+            color: #d5d8df !important;
+        }
+
+        .kuac-login-callout strong {
+            color: #ff7084 !important;
+        }
+
+        /* Footer */
+        .kuac-footer {
+            background: linear-gradient(90deg, #1c1f25 0%, #202229 62%, #281a1f 100%) !important;
+            border-color: #363a43 !important;
+            box-shadow: 0 5px 18px rgba(0,0,0,.14) !important;
+        }
+
+        .kuac-footer-mark {
+            color: #777e89 !important;
+        }
+
+        .kuac-footer-text {
+            color: #ff7185 !important;
+        }
+
+        .kuac-footer-brand {
+            color: #b8bec8 !important;
+        }
+
+        /* Dataframes */
+        [data-testid="stDataFrame"] {
+            color-scheme: dark;
+        }
+
+        /* Horizontal rules */
+        hr {
+            border-color: #353942 !important;
+        }
+    }
+
 </style>
     """,
     unsafe_allow_html=True,
