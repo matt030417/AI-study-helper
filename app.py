@@ -861,7 +861,7 @@ with tab_oral:
     st.subheader("개념 확인")
 
     if not st.session_state.chunks:
-        st.info("먼저 1번 탭에서 자료를 등록해 주세요.")
+        st.info("먼저 '자료 등록' 탭에서 자료를 등록해 주세요.")
     else:
         c1, c2, c3 = st.columns([2, 1, 1])
         with c1:
@@ -898,6 +898,9 @@ with tab_oral:
                     st.session_state.question = q
                     st.session_state.question_context = ctx_items
                     st.session_state.oral_eval = None
+                    st.session_state.oral_eval_context = []
+                    # 새 질문에서는 이전 질문의 답변을 자동으로 비운다.
+                    st.session_state.pop("oral_answer", None)
 
         q = st.session_state.question
         if q:
@@ -1044,6 +1047,9 @@ with tab_practice:
                         st.session_state.practice = problem
                         st.session_state.practice_context = ctx_items
                         st.session_state.practice_eval = None
+                        # 새 문제에서는 이전 문제의 최종 답과 타이핑 풀이를 자동으로 비운다.
+                        st.session_state.pop("practice_final", None)
+                        st.session_state.pop("practice_work", None)
 
         problem = st.session_state.practice
         if problem:
