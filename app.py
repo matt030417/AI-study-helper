@@ -516,6 +516,28 @@ st.markdown(
         padding-bottom: .78rem;
     }
 
+
+
+    .project-selected-badge {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 38px;
+        padding: 0 10px;
+        border-radius: 10px;
+        background: #b71932;
+        color: #ffffff !important;
+        font-size: .76rem;
+        font-weight: 850;
+        white-space: nowrap;
+        box-shadow: 0 4px 10px rgba(183,25,50,.18);
+    }
+
+    .project-current-label {
+        color: #b71932 !important;
+        font-weight: 800;
+    }
+
 </style>
     """,
     unsafe_allow_html=True,
@@ -1240,7 +1262,7 @@ with tab_projects:
 
                 with project_cols[idx % 4]:
                     with st.container(border=True):
-                        title_col, select_col = st.columns([4.2, 1.15], gap="small")
+                        title_col, select_col = st.columns([3.35, 1.65], gap="small")
 
                         with title_col:
                             st.markdown(
@@ -1254,17 +1276,18 @@ with tab_projects:
 
                         with select_col:
                             if is_current:
-                                st.button(
-                                    "✓",
-                                    key=f"current_project_{project['id']}",
-                                    disabled=True,
-                                    help="현재 선택된 프로젝트",
+                                st.markdown(
+                                    """
+                                    <div class="project-selected-badge">선택됨</div>
+                                    """,
+                                    unsafe_allow_html=True,
                                 )
                             else:
                                 if st.button(
                                     "선택",
                                     key=f"open_project_{project['id']}",
                                     help=f"{project['name']} 프로젝트 선택",
+                                    use_container_width=True,
                                 ):
                                     set_current_project(project["id"])
                                     with st.spinner("프로젝트 자료를 불러오는 중..."):
@@ -1273,7 +1296,7 @@ with tab_projects:
 
                         st.markdown(
                             f"""
-                            <div class="project-card-status">
+                            <div class="project-card-status {'project-current-label' if is_current else ''}">
                                 {'● 현재 학습 중' if is_current else '프로젝트 선택 후 학습'}
                             </div>
                             """,
