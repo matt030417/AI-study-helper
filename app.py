@@ -899,30 +899,14 @@ with st.sidebar:
         st.info("학습 기록 저장 기능이 아직 연결되지 않았습니다. 현재는 브라우저 세션에만 저장됩니다.")
 
     if cloud_logged_in():
-        st.divider()
-        st.markdown("### 현재 프로젝트")
-        if st.session_state.projects:
-            project_ids = [p["id"] for p in st.session_state.projects]
-            current_id = st.session_state.get("current_project_id", "")
-            if current_id not in project_ids:
-                current_id = project_ids[0]
-            selected_id = st.selectbox(
-                "과목 / 프로젝트",
-                project_ids,
-                index=project_ids.index(current_id),
-                format_func=lambda pid: next((p["name"] for p in st.session_state.projects if p["id"] == pid), pid),
-                key="project_switcher",
+        if st.session_state.get("current_project_name"):
+            st.caption(
+                f"현재 프로젝트 · **{st.session_state.current_project_name}**"
             )
-            if selected_id != st.session_state.get("current_project_id", ""):
-                set_current_project(selected_id)
-                load_current_project_materials(force=True)
-                st.rerun()
-            elif st.session_state.get("loaded_material_project_id") != selected_id:
-                with st.spinner("프로젝트 자료를 불러오는 중..."):
-                    load_current_project_materials()
-            st.caption(f"현재: {st.session_state.current_project_name}")
+        elif st.session_state.get("projects"):
+            st.caption("프로젝트 설정 탭에서 학습할 과목을 선택해 주세요.")
         else:
-            st.warning("먼저 '프로젝트 설정' 탭에서 과목을 만들어 주세요.")
+            st.caption("프로젝트 설정 탭에서 첫 과목을 만들어 주세요.")
 
         st.divider()
         st.markdown("### AI 연결")
@@ -1007,7 +991,7 @@ if not cloud_logged_in():
                     나에게 필요한 맞춤 문제와 상세한 피드백까지 이어지는 AI 학습 파트너입니다.
                 </div>
                 <div class="kuac-chips">
-                    <div class="kuac-chip"><b>▣</b> 강의자료 기반 학습</div>
+                    <div class="kuac-chip"><b>▣</b> 강의 자료 기반 학습</div>
                     <div class="kuac-chip"><b>●</b> 개념 확인</div>
                     <div class="kuac-chip"><b>✎</b> 맞춤 문제 생성</div>
                     <div class="kuac-chip"><b>▥</b> 학습 현황 분석</div>
@@ -1028,8 +1012,8 @@ if not cloud_logged_in():
         <div class="kuac-feature-grid">
             <div class="kuac-feature-card red">
                 <div class="kuac-feature-icon">▣</div>
-                <h4>강의자료 기반 학습</h4>
-                <p>강의자료와 기출문제를 과목별 프로젝트에 저장하고 필요한 내용만 찾아 학습합니다.</p>
+                <h4>강의 자료 기반 학습</h4>
+                <p>강의 자료와 기출문제를 과목별 프로젝트에 저장하고, 필요한 내용을 찾아 학습합니다.</p>
             </div>
             <div class="kuac-feature-card blue">
                 <div class="kuac-feature-icon">?</div>
@@ -1067,6 +1051,16 @@ if not cloud_logged_in():
     st.stop()
 
 
+# 로그인 직후 또는 프로젝트 전환 직후 현재 프로젝트의 저장 자료를 자동으로 불러옵니다.
+if (
+    cloud_logged_in()
+    and st.session_state.get("current_project_id")
+    and st.session_state.get("loaded_material_project_id")
+        != st.session_state.get("current_project_id")
+):
+    with st.spinner("현재 프로젝트 자료를 불러오는 중..."):
+        load_current_project_materials()
+
 tab_projects, tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
     ["프로젝트 설정", "자료 등록", "개념 확인", "맞춤 문제", "학습 현황"]
 )
@@ -1077,7 +1071,7 @@ tab_projects, tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
 # -------------------------
 with tab_projects:
     st.subheader("내 학습 프로젝트")
-    st.caption("과목별로 강의자료, 기출문제, 학습 기록과 취약점을 분리해서 관리합니다.")
+    st.caption("과목별로 자료와 학습 기록을 분리해 관리하고, 아래 카드에서 학습할 프로젝트를 선택합니다.")
 
     if cloud_logged_in():
         with st.form("new_project_form", clear_on_submit=True):
@@ -1117,32 +1111,76 @@ with tab_projects:
             st.info("아직 프로젝트가 없습니다. 첫 과목을 만들어 주세요.")
         else:
             st.markdown("### 프로젝트 목록")
-            for project in st.session_state.projects:
-                pa = [a for a in st.session_state.attempts if a.get("project_id") == project["id"]]
+            st.caption("학습할 과목 카드를 선택하면 해당 프로젝트의 자료와 학습 기록으로 전환됩니다.")
+
+            project_cols = st.columns(3)
+            for idx, project in enumerate(st.session_state.projects):
+                pa = [
+                    a for a in st.session_state.attempts
+                    if a.get("project_id") == project["id"]
+                ]
                 weak_counter = Counter()
                 for a in pa:
-                    weak_counter.update([x for x in (a.get("weak_concepts") or []) if x])
-                top_weak = ", ".join(x for x, _ in weak_counter.most_common(3)) or "아직 없음"
-                is_current = project["id"] == st.session_state.get("current_project_id")
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([3, 1, 1])
-                    with c1:
-                        st.markdown(f"### {'📂' if is_current else '📁'} {project['name']}")
-                        if project.get("description"):
-                            st.caption(project["description"])
-                        st.write(f"취약 개념: **{top_weak}**")
-                    with c2:
-                        st.metric("학습 기록", len(pa))
-                        if pa:
-                            st.caption(f"평균 {sum(a['score'] for a in pa)/len(pa):.1f}점")
-                    with c3:
-                        if not is_current and st.button("열기", key=f"open_project_{project['id']}", use_container_width=True):
-                            set_current_project(project["id"])
-                            with st.spinner("프로젝트 자료를 불러오는 중..."):
-                                load_current_project_materials(force=True)
-                            st.rerun()
-                        elif is_current:
-                            st.success("현재 프로젝트")
+                    weak_counter.update(
+                        [x for x in (a.get("weak_concepts") or []) if x]
+                    )
+
+                top_weak_list = [
+                    x for x, _ in weak_counter.most_common(2)
+                ]
+                top_weak = " · ".join(top_weak_list) if top_weak_list else "아직 없음"
+                avg_score = (
+                    sum(a["score"] for a in pa) / len(pa)
+                    if pa else None
+                )
+                is_current = (
+                    project["id"]
+                    == st.session_state.get("current_project_id")
+                )
+
+                with project_cols[idx % 3]:
+                    with st.container(border=True):
+                        st.markdown(
+                            f"### {'📂' if is_current else '📁'} {project['name']}"
+                        )
+
+                        if is_current:
+                            st.caption("● 현재 학습 중인 프로젝트")
+                        else:
+                            st.caption("프로젝트를 선택해 학습을 시작하세요.")
+
+                        c_stat1, c_stat2 = st.columns(2)
+                        with c_stat1:
+                            st.metric("학습 기록", len(pa))
+                        with c_stat2:
+                            st.metric(
+                                "평균 점수",
+                                f"{avg_score:.1f}" if avg_score is not None else "-",
+                            )
+
+                        st.markdown("**주요 취약 개념**")
+                        st.caption(top_weak)
+
+                        if is_current:
+                            st.button(
+                                "현재 프로젝트",
+                                key=f"current_project_{project['id']}",
+                                use_container_width=True,
+                                disabled=True,
+                            )
+                        else:
+                            if st.button(
+                                "이 프로젝트 선택",
+                                key=f"open_project_{project['id']}",
+                                use_container_width=True,
+                                type="primary",
+                            ):
+                                set_current_project(project["id"])
+                                with st.spinner("프로젝트 자료를 불러오는 중..."):
+                                    load_current_project_materials(force=True)
+                                st.rerun()
+
+            st.write("")
 
             current = next((p for p in st.session_state.projects if p["id"] == st.session_state.current_project_id), None)
             if current:
