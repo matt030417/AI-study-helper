@@ -1068,8 +1068,8 @@ if not cloud_logged_in():
         <div class="kuac-feature-grid">
             <div class="kuac-feature-card red">
                 <div class="kuac-feature-icon">▣</div>
-                <h4>강의 자료 기반 학습</h4>
-                <p>강의 자료와 기출문제를 과목별 프로젝트에 저장하고, 필요한 내용을 찾아 학습합니다.</p>
+                <h4>강의자료<br>기반 학습</h4>
+                <p>강의자료와 기출문제를 과목별 프로젝트에 저장하고, 필요한 내용을 찾아 학습합니다.</p>
             </div>
             <div class="kuac-feature-card blue">
                 <div class="kuac-feature-icon">?</div>
