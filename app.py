@@ -475,6 +475,47 @@ st.markdown(
         background: var(--st-red-background-color) !important;
         color: var(--st-red-text-color) !important;
     }
+
+
+    /* Compact project grid cards */
+    .project-card-title {
+        min-height: 54px;
+        max-height: 54px;
+        overflow: hidden;
+        display: flex;
+        align-items: flex-start;
+        color: var(--st-text-color);
+        font-size: 1.12rem;
+        line-height: 1.28;
+        font-weight: 850;
+        letter-spacing: -.025em;
+        margin: 1px 0 2px;
+    }
+
+    .project-card-status {
+        min-height: 20px;
+        margin-bottom: 4px;
+        color: var(--st-gray-text-color);
+        font-size: .72rem;
+        line-height: 1.25;
+    }
+
+    .project-card-weak {
+        min-height: 42px;
+        max-height: 42px;
+        overflow: hidden;
+        color: var(--st-gray-text-color);
+        font-size: .76rem;
+        line-height: 1.4;
+        margin-top: 2px;
+    }
+
+    /* 프로젝트 카드 안쪽 여백을 조금 줄임 */
+    [data-testid="stVerticalBlockBorderWrapper"] > div {
+        padding-top: .78rem;
+        padding-bottom: .78rem;
+    }
+
 </style>
     """,
     unsafe_allow_html=True,
@@ -1169,12 +1210,13 @@ with tab_projects:
             st.markdown("### 프로젝트 목록")
             st.caption("학습할 과목 카드를 선택하면 해당 프로젝트의 자료와 학습 기록으로 전환됩니다.")
 
-            project_cols = st.columns(3)
+            project_cols = st.columns(4)
             for idx, project in enumerate(st.session_state.projects):
                 pa = [
                     a for a in st.session_state.attempts
                     if a.get("project_id") == project["id"]
                 ]
+
                 weak_counter = Counter()
                 for a in pa:
                     weak_counter.update(
@@ -1185,56 +1227,75 @@ with tab_projects:
                     x for x, _ in weak_counter.most_common(2)
                 ]
                 top_weak = " · ".join(top_weak_list) if top_weak_list else "아직 없음"
+
                 avg_score = (
                     sum(a["score"] for a in pa) / len(pa)
                     if pa else None
                 )
+
                 is_current = (
                     project["id"]
                     == st.session_state.get("current_project_id")
                 )
 
-                with project_cols[idx % 3]:
+                with project_cols[idx % 4]:
                     with st.container(border=True):
+                        title_col, select_col = st.columns([4.2, 1.15], gap="small")
+
+                        with title_col:
+                            st.markdown(
+                                f"""
+                                <div class="project-card-title">
+                                    {'📂' if is_current else '📁'} {project['name']}
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+
+                        with select_col:
+                            if is_current:
+                                st.button(
+                                    "✓",
+                                    key=f"current_project_{project['id']}",
+                                    disabled=True,
+                                    help="현재 선택된 프로젝트",
+                                )
+                            else:
+                                if st.button(
+                                    "선택",
+                                    key=f"open_project_{project['id']}",
+                                    help=f"{project['name']} 프로젝트 선택",
+                                ):
+                                    set_current_project(project["id"])
+                                    with st.spinner("프로젝트 자료를 불러오는 중..."):
+                                        load_current_project_materials(force=True)
+                                    st.rerun()
+
                         st.markdown(
-                            f"### {'📂' if is_current else '📁'} {project['name']}"
+                            f"""
+                            <div class="project-card-status">
+                                {'● 현재 학습 중' if is_current else '프로젝트 선택 후 학습'}
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
                         )
 
-                        if is_current:
-                            st.caption("● 현재 학습 중인 프로젝트")
-                        else:
-                            st.caption("프로젝트를 선택해 학습을 시작하세요.")
-
-                        c_stat1, c_stat2 = st.columns(2)
-                        with c_stat1:
+                        stat1, stat2 = st.columns(2, gap="small")
+                        with stat1:
                             st.metric("학습 기록", len(pa))
-                        with c_stat2:
+                        with stat2:
                             st.metric(
                                 "평균 점수",
                                 f"{avg_score:.1f}" if avg_score is not None else "-",
                             )
 
                         st.markdown("**주요 취약 개념**")
-                        st.caption(top_weak)
-
-                        if is_current:
-                            st.button(
-                                "현재 프로젝트",
-                                key=f"current_project_{project['id']}",
-                                use_container_width=True,
-                                disabled=True,
-                            )
-                        else:
-                            if st.button(
-                                "이 프로젝트 선택",
-                                key=f"open_project_{project['id']}",
-                                use_container_width=True,
-                                type="primary",
-                            ):
-                                set_current_project(project["id"])
-                                with st.spinner("프로젝트 자료를 불러오는 중..."):
-                                    load_current_project_materials(force=True)
-                                st.rerun()
+                        st.markdown(
+                            f"""
+                            <div class="project-card-weak">{top_weak}</div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
             st.write("")
 
