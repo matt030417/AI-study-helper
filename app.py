@@ -538,6 +538,49 @@ st.markdown(
         font-weight: 800;
     }
 
+
+
+    /* Project select controls: selected / selectable boxes have identical dimensions */
+    .project-selected-badge {
+        width: 100%;
+        height: 42px;
+        min-height: 42px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+        padding: 0 8px;
+        border-radius: 10px;
+        background: #b71932;
+        color: #ffffff !important;
+        font-size: .78rem;
+        font-weight: 850;
+        white-space: nowrap;
+        box-shadow: 0 4px 10px rgba(183,25,50,.18);
+    }
+
+    /* The project-card Streamlit button is styled to match the selected badge */
+    div[class*="st-key-project_select_"] button {
+        width: 100% !important;
+        height: 42px !important;
+        min-height: 42px !important;
+        padding: 0 8px !important;
+        border-radius: 10px !important;
+        font-size: .78rem !important;
+        font-weight: 850 !important;
+        line-height: 1 !important;
+        white-space: nowrap !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+    }
+
+    div[class*="st-key-project_select_"] button p {
+        white-space: nowrap !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        margin: 0 !important;
+    }
+
 </style>
     """,
     unsafe_allow_html=True,
@@ -1262,7 +1305,7 @@ with tab_projects:
 
                 with project_cols[idx % 4]:
                     with st.container(border=True):
-                        title_col, select_col = st.columns([3.35, 1.65], gap="small")
+                        title_col, select_col = st.columns([3.0, 1.45], gap="small")
 
                         with title_col:
                             st.markdown(
@@ -1283,16 +1326,19 @@ with tab_projects:
                                     unsafe_allow_html=True,
                                 )
                             else:
-                                if st.button(
-                                    "선택",
-                                    key=f"open_project_{project['id']}",
-                                    help=f"{project['name']} 프로젝트 선택",
-                                    use_container_width=True,
+                                with st.container(
+                                    key=f"project_select_{project['id']}"
                                 ):
-                                    set_current_project(project["id"])
-                                    with st.spinner("프로젝트 자료를 불러오는 중..."):
-                                        load_current_project_materials(force=True)
-                                    st.rerun()
+                                    if st.button(
+                                        "선택",
+                                        key=f"open_project_{project['id']}",
+                                        help=f"{project['name']} 프로젝트 선택",
+                                        use_container_width=True,
+                                    ):
+                                        set_current_project(project["id"])
+                                        with st.spinner("프로젝트 자료를 불러오는 중..."):
+                                            load_current_project_materials(force=True)
+                                        st.rerun()
 
                         st.markdown(
                             f"""
