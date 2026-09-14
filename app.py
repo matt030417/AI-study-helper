@@ -52,20 +52,21 @@ st.markdown(
     """
 <style>
     :root {
-        --kuac-red: #b71932;
-        --kuac-red-dark: #941126;
-        --kuac-red-soft: #fff1f3;
-        --kuac-ink: #171b26;
-        --kuac-muted: #667085;
-        --kuac-line: #e8e9ee;
-        --kuac-panel: #ffffff;
+        /* Streamlit의 현재 Light/Dark 선택을 그대로 따라갑니다. */
+        --kuac-red: var(--st-red-text-color, #b71932);
+        --kuac-red-dark: var(--st-red-color, #b71932);
+        --kuac-red-soft: var(--st-red-background-color, #fff1f3);
+        --kuac-ink: var(--st-text-color, #171b26);
+        --kuac-muted: var(--st-gray-text-color, #667085);
+        --kuac-line: var(--st-border-color, #e8e9ee);
+        --kuac-panel: var(--st-background-color, #ffffff);
+        --kuac-secondary: var(--st-secondary-background-color, #f5f6f8);
     }
 
     /* App canvas */
     [data-testid="stAppViewContainer"] {
-        background:
-            radial-gradient(circle at 82% 6%, rgba(183,25,50,.045), transparent 22rem),
-            linear-gradient(180deg, #ffffff 0%, #fcfcfd 100%);
+        background: var(--st-background-color) !important;
+        color: var(--st-text-color) !important;
     }
 
     .main .block-container {
@@ -76,8 +77,9 @@ st.markdown(
 
     /* Sidebar */
     [data-testid="stSidebar"] {
-        background: #fbfcfe;
-        border-right: 1px solid #ececf1;
+        background: var(--st-secondary-background-color) !important;
+        color: var(--st-text-color) !important;
+        border-right: 1px solid var(--st-border-color);
     }
     [data-testid="stSidebar"] > div:first-child {
         padding-top: 1.2rem;
@@ -105,17 +107,17 @@ st.markdown(
     }
     .kuac-side-subtitle {
         margin-top: 5px;
-        color: #7b8190;
+        color: var(--kuac-muted);
         font-size: .71rem;
         line-height: 1.25;
     }
     .kuac-side-note {
         margin-top: 12px;
         padding: 13px 14px;
-        background: linear-gradient(135deg, #fff7f7, #fffdf8);
-        border: 1px solid #f3e6e3;
+        background: var(--st-red-background-color);
+        border: 1px solid var(--st-border-color);
         border-radius: 14px;
-        color: #4a4e58;
+        color: var(--st-text-color);
         font-size: .83rem;
         line-height: 1.5;
     }
@@ -134,8 +136,13 @@ st.markdown(
         margin-bottom: 18px;
         padding: 34px 38px;
         background:
-            linear-gradient(116deg, #ffffff 0%, #fffafa 58%, #fff2f4 100%);
-        border: 1px solid #eee7e8;
+            linear-gradient(
+                116deg,
+                var(--st-background-color) 0%,
+                var(--st-background-color) 58%,
+                var(--st-red-background-color) 100%
+            );
+        border: 1px solid var(--st-border-color);
         border-radius: 22px;
         box-shadow: 0 12px 34px rgba(19, 25, 38, .055);
     }
@@ -162,7 +169,7 @@ st.markdown(
     }
     .kuac-brandline {
         margin-top: 12px;
-        color: #697080;
+        color: var(--kuac-muted);
         font-size: 1.12rem;
         font-weight: 500;
     }
@@ -173,7 +180,7 @@ st.markdown(
     .kuac-hero-desc {
         max-width: 760px;
         margin-top: 16px;
-        color: #596171;
+        color: var(--kuac-muted);
         font-size: 1rem;
         line-height: 1.72;
     }
@@ -185,10 +192,10 @@ st.markdown(
     }
     .kuac-chip {
         padding: 8px 12px;
-        background: rgba(255,255,255,.88);
-        border: 1px solid #ece4e6;
+        background: var(--st-secondary-background-color);
+        border: 1px solid var(--st-border-color);
         border-radius: 999px;
-        color: #343944;
+        color: var(--st-text-color);
         font-size: .84rem;
         font-weight: 700;
         box-shadow: 0 3px 10px rgba(17,24,39,.035);
@@ -215,7 +222,7 @@ st.markdown(
         right: 14px;
         bottom: 20px;
         z-index: 2;
-        color: #86162a;
+        color: var(--kuac-red);
         text-align: right;
         font-size: 1.02rem;
         line-height: 1.5;
@@ -224,7 +231,7 @@ st.markdown(
     .kuac-hero-quote small {
         display: block;
         margin-top: 9px;
-        color: #9b5562;
+        color: var(--kuac-muted);
         font-size: .72rem;
         font-weight: 700;
         letter-spacing: .02em;
@@ -234,8 +241,8 @@ st.markdown(
     .stTabs [data-baseweb="tab-list"] {
         gap: 4px;
         padding: 5px;
-        background: #ffffff;
-        border: 1px solid var(--kuac-line);
+        background: var(--st-background-color);
+        border: 1px solid var(--st-border-color);
         border-radius: 15px;
         box-shadow: 0 5px 18px rgba(15,23,42,.035);
     }
@@ -244,13 +251,13 @@ st.markdown(
         height: 48px;
         justify-content: center;
         border-radius: 11px;
-        color: #464c59;
+        color: var(--st-text-color);
         font-weight: 730;
         padding-left: 18px;
         padding-right: 18px;
     }
     .stTabs [data-baseweb="tab"]:hover {
-        background: #fff7f8;
+        background: var(--st-red-background-color);
         color: var(--kuac-red);
     }
     .stTabs [aria-selected="true"] {
@@ -265,7 +272,7 @@ st.markdown(
     /* Cards */
     [data-testid="stVerticalBlockBorderWrapper"] {
         border-radius: 16px !important;
-        border-color: #e7e9ee !important;
+        border-color: var(--st-border-color) !important;
         box-shadow: 0 6px 20px rgba(15,23,42,.025);
     }
 
@@ -279,7 +286,7 @@ st.markdown(
     }
     .stButton > button[kind="primary"]:hover,
     .stFormSubmitButton > button[kind="primary"]:hover {
-        background: linear-gradient(90deg, #821020, #a8152b);
+        background: var(--st-red-color);
         color: white;
     }
     .stTextInput input:focus,
@@ -303,7 +310,7 @@ st.markdown(
     }
     .kuac-landing-sub {
         margin-bottom: 14px;
-        color: #737986;
+        color: var(--kuac-muted);
         font-size: .92rem;
     }
     .kuac-feature-grid {
@@ -316,15 +323,15 @@ st.markdown(
     .kuac-feature-card {
         min-height: 128px;
         padding: 18px;
-        border: 1px solid #e8e9ee;
+        border: 1px solid var(--st-border-color);
         border-radius: 17px;
-        background: #ffffff;
+        background: var(--st-background-color);
         box-shadow: 0 6px 20px rgba(15,23,42,.035);
     }
-    .kuac-feature-card.red { background: linear-gradient(145deg, #fff7f8, #ffffff); }
-    .kuac-feature-card.blue { background: linear-gradient(145deg, #f5f9ff, #ffffff); }
-    .kuac-feature-card.green { background: linear-gradient(145deg, #f4fbf7, #ffffff); }
-    .kuac-feature-card.purple { background: linear-gradient(145deg, #faf6ff, #ffffff); }
+    .kuac-feature-card.red { background: var(--st-red-background-color); }
+    .kuac-feature-card.blue { background: var(--st-blue-background-color); }
+    .kuac-feature-card.green { background: var(--st-green-background-color); }
+    .kuac-feature-card.purple { background: var(--st-violet-background-color); }
     .kuac-feature-icon {
         width: 38px;
         height: 38px;
@@ -332,30 +339,30 @@ st.markdown(
         place-items: center;
         margin-bottom: 12px;
         border-radius: 12px;
-        background: #fff0f2;
+        background: var(--st-red-background-color);
         color: var(--kuac-red);
         font-weight: 900;
         font-size: 1.05rem;
     }
     .kuac-feature-card h4 {
         margin: 0 0 7px;
-        color: #252a35;
+        color: var(--st-text-color);
         font-size: 1rem;
         font-weight: 850;
     }
     .kuac-feature-card p {
         margin: 0;
-        color: #717784;
+        color: var(--kuac-muted);
         font-size: .82rem;
         line-height: 1.5;
     }
     .kuac-login-callout {
         margin-top: 8px;
         padding: 18px 20px;
-        border: 1px solid #f0dfe2;
+        border: 1px solid var(--st-border-color);
         border-radius: 16px;
-        background: linear-gradient(100deg, #fff7f8, #fffdfd);
-        color: #535966;
+        background: var(--st-red-background-color);
+        color: var(--st-text-color);
         line-height: 1.65;
     }
     .kuac-login-callout strong {
@@ -370,13 +377,13 @@ st.markdown(
         align-items: center;
         gap: 14px;
         padding: 18px 22px;
-        border: 1px solid #e8e9ed;
+        border: 1px solid var(--st-border-color);
         border-radius: 16px;
-        background: linear-gradient(90deg, #f8f9fb 0%, #ffffff 62%, #fff8f9 100%);
+        background: var(--st-secondary-background-color);
         box-shadow: 0 5px 18px rgba(15,23,42,.03);
     }
     .kuac-footer-mark {
-        color: #9ea4ae;
+        color: var(--kuac-muted);
         font-size: 1.9rem;
         font-weight: 900;
         line-height: 1;
@@ -391,7 +398,7 @@ st.markdown(
         display: flex;
         align-items: center;
         gap: 9px;
-        color: #59606d;
+        color: var(--kuac-muted);
         font-size: .77rem;
         white-space: nowrap;
     }
@@ -421,296 +428,53 @@ st.markdown(
     }
 
 
-    /* =========================================================
-       Dark mode support
-       ========================================================= */
-    @media (prefers-color-scheme: dark) {
-        :root {
-            --kuac-red: #ef536a;
-            --kuac-red-dark: #ff6f83;
-            --kuac-red-soft: #34171d;
-            --kuac-ink: #f4f5f7;
-            --kuac-muted: #b6bcc8;
-            --kuac-line: #343841;
-            --kuac-panel: #1d2027;
-        }
-
-        html, body,
-        [data-testid="stAppViewContainer"] {
-            color: #f3f4f6 !important;
-        }
-
-        [data-testid="stAppViewContainer"] {
-            background:
-                radial-gradient(circle at 82% 6%, rgba(239,83,106,.08), transparent 22rem),
-                linear-gradient(180deg, #111318 0%, #15171d 100%) !important;
-        }
-
-        .main .block-container {
-            color: #f3f4f6 !important;
-        }
-
-        /* Sidebar */
-        [data-testid="stSidebar"] {
-            background: #15181e !important;
-            border-right-color: #2d3139 !important;
-        }
-
-        [data-testid="stSidebar"] * {
-            color: #f2f3f5;
-        }
-
-        .kuac-side-title {
-            color: #ffffff !important;
-        }
-
-        .kuac-side-subtitle,
-        [data-testid="stSidebar"] .stCaption {
-            color: #aeb4bf !important;
-        }
-
-        .kuac-side-note {
-            background: linear-gradient(135deg, #25181b, #211e1b) !important;
-            border-color: #473438 !important;
-            color: #d8dbe1 !important;
-        }
-
-        .kuac-side-note strong {
-            color: #ff7084 !important;
-        }
-
-        /* Hero */
-        .kuac-hero {
-            background:
-                linear-gradient(116deg, #1a1d23 0%, #20191c 58%, #2a171d 100%) !important;
-            border-color: #393037 !important;
-            box-shadow: 0 12px 34px rgba(0,0,0,.28) !important;
-        }
-
-        .kuac-hero h1 {
-            color: #f7f7f8 !important;
-        }
-
-        .kuac-hero h1 span,
-        .kuac-eyebrow,
-        .kuac-brandline strong {
-            color: #ff6279 !important;
-        }
-
-        .kuac-brandline,
-        .kuac-hero-desc {
-            color: #c2c7d0 !important;
-        }
-
-        .kuac-chip {
-            background: rgba(37,40,47,.9) !important;
-            border-color: #3b3f47 !important;
-            color: #eceef1 !important;
-            box-shadow: 0 3px 10px rgba(0,0,0,.16) !important;
-        }
-
-        .kuac-chip b {
-            color: #ff6f83 !important;
-        }
-
-        .kuac-hero-quote {
-            color: #ff8293 !important;
-        }
-
-        .kuac-hero-quote small {
-            color: #c89ba3 !important;
-        }
-
-        /* Tabs */
-        .stTabs [data-baseweb="tab-list"] {
-            background: #1b1e24 !important;
-            border-color: #343840 !important;
-            box-shadow: 0 5px 18px rgba(0,0,0,.18) !important;
-        }
-
-        .stTabs [data-baseweb="tab"] {
-            color: #d4d7dd !important;
-        }
-
-        .stTabs [data-baseweb="tab"]:hover {
-            background: #2b1b20 !important;
-            color: #ff7084 !important;
-        }
-
-        .stTabs [aria-selected="true"] {
-            background: #321a20 !important;
-            color: #ff7084 !important;
-            box-shadow: inset 0 -3px 0 #ef536a !important;
-        }
-
-        /* Streamlit cards, expanders, forms */
-        [data-testid="stVerticalBlockBorderWrapper"] {
-            background: #1b1e24 !important;
-            border-color: #343840 !important;
-            box-shadow: 0 6px 20px rgba(0,0,0,.14) !important;
-        }
-
-        [data-testid="stExpander"] {
-            background: #1b1e24 !important;
-            border-color: #343840 !important;
-        }
-
-        /* Headings / text */
-        h1, h2, h3, h4, h5, h6,
-        p, label,
-        [data-testid="stMarkdownContainer"],
-        [data-testid="stText"],
-        [data-testid="stMetricLabel"],
-        [data-testid="stMetricValue"] {
-            color: #f0f2f5;
-        }
-
-        [data-testid="stCaptionContainer"],
-        .stCaption {
-            color: #aeb4bf !important;
-        }
-
-        /* Inputs */
-        .stTextInput input,
-        .stTextArea textarea,
-        .stSelectbox [data-baseweb="select"] > div,
-        .stNumberInput input {
-            background: #20232a !important;
-            color: #f6f7f8 !important;
-            border-color: #3a3e47 !important;
-        }
-
-        .stTextInput input::placeholder,
-        .stTextArea textarea::placeholder {
-            color: #8e95a1 !important;
-        }
-
-        .stTextInput input:focus,
-        .stTextArea textarea:focus {
-            border-color: #ef536a !important;
-            box-shadow: 0 0 0 1px #ef536a !important;
-        }
-
-        /* Uploaders */
-        [data-testid="stFileUploader"] section {
-            background: #1f2229 !important;
-            border-color: #3b3f48 !important;
-        }
-
-        [data-testid="stFileUploader"] section * {
-            color: #e5e7eb !important;
-        }
-
-        /* Buttons */
-        .stButton > button:not([kind="primary"]),
-        .stFormSubmitButton > button:not([kind="primary"]) {
-            background: #24272e !important;
-            color: #eceef2 !important;
-            border-color: #41454f !important;
-        }
-
-        .stButton > button:not([kind="primary"]):hover,
-        .stFormSubmitButton > button:not([kind="primary"]):hover {
-            background: #30343c !important;
-            border-color: #565b66 !important;
-            color: #ffffff !important;
-        }
-
-        .stButton > button[kind="primary"],
-        .stFormSubmitButton > button[kind="primary"] {
-            background: linear-gradient(90deg, #be203b, #e13b58) !important;
-            color: #ffffff !important;
-        }
-
-        /* Alerts */
-        [data-testid="stAlert"] {
-            color: #eef0f3 !important;
-        }
-
-        /* Logged-out landing cards */
-        .kuac-landing-title {
-            color: #f5f6f7 !important;
-        }
-
-        .kuac-landing-sub {
-            color: #aeb4bf !important;
-        }
-
-        .kuac-feature-card {
-            background: #1b1e24 !important;
-            border-color: #343840 !important;
-            box-shadow: 0 6px 20px rgba(0,0,0,.15) !important;
-        }
-
-        .kuac-feature-card.red {
-            background: linear-gradient(145deg, #29191d, #1c1f25) !important;
-        }
-
-        .kuac-feature-card.blue {
-            background: linear-gradient(145deg, #192230, #1c1f25) !important;
-        }
-
-        .kuac-feature-card.green {
-            background: linear-gradient(145deg, #19271f, #1c1f25) !important;
-        }
-
-        .kuac-feature-card.purple {
-            background: linear-gradient(145deg, #241c2d, #1c1f25) !important;
-        }
-
-        .kuac-feature-card h4 {
-            color: #f5f6f7 !important;
-        }
-
-        .kuac-feature-card p {
-            color: #b7bcc6 !important;
-        }
-
-        .kuac-feature-icon {
-            background: #341b21 !important;
-            color: #ff7084 !important;
-        }
-
-        .kuac-login-callout {
-            background: linear-gradient(100deg, #24181b, #1b1e24) !important;
-            border-color: #443136 !important;
-            color: #d5d8df !important;
-        }
-
-        .kuac-login-callout strong {
-            color: #ff7084 !important;
-        }
-
-        /* Footer */
-        .kuac-footer {
-            background: linear-gradient(90deg, #1c1f25 0%, #202229 62%, #281a1f 100%) !important;
-            border-color: #363a43 !important;
-            box-shadow: 0 5px 18px rgba(0,0,0,.14) !important;
-        }
-
-        .kuac-footer-mark {
-            color: #777e89 !important;
-        }
-
-        .kuac-footer-text {
-            color: #ff7185 !important;
-        }
-
-        .kuac-footer-brand {
-            color: #b8bec8 !important;
-        }
-
-        /* Dataframes */
-        [data-testid="stDataFrame"] {
-            color-scheme: dark;
-        }
-
-        /* Horizontal rules */
-        hr {
-            border-color: #353942 !important;
-        }
+    /* Streamlit Theme-safe reinforcement:
+       Light/Dark 버튼을 누르면 Streamlit의 --st-* 변수가 바뀌고
+       아래 UI도 같이 바뀝니다. OS 테마 media query는 사용하지 않습니다. */
+    .kuac-side-title,
+    .kuac-hero h1,
+    .kuac-landing-title,
+    .kuac-feature-card h4 {
+        color: var(--st-text-color) !important;
     }
 
+    .kuac-side-subtitle,
+    .kuac-hero-desc,
+    .kuac-brandline,
+    .kuac-landing-sub,
+    .kuac-feature-card p,
+    .kuac-footer-brand {
+        color: var(--st-gray-text-color) !important;
+    }
+
+    .kuac-chip {
+        background: var(--st-secondary-background-color) !important;
+        color: var(--st-text-color) !important;
+        border-color: var(--st-border-color) !important;
+    }
+
+    .kuac-feature-card,
+    .kuac-login-callout,
+    .kuac-footer,
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        color: var(--st-text-color) !important;
+        border-color: var(--st-border-color) !important;
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        background: var(--st-background-color) !important;
+        border-color: var(--st-border-color) !important;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        color: var(--st-text-color) !important;
+    }
+
+    .stTabs [data-baseweb="tab"]:hover,
+    .stTabs [aria-selected="true"] {
+        background: var(--st-red-background-color) !important;
+        color: var(--st-red-text-color) !important;
+    }
 </style>
     """,
     unsafe_allow_html=True,
