@@ -293,6 +293,75 @@ st.markdown(
         letter-spacing: -.025em;
     }
 
+    /* Logged-out landing */
+    .kuac-landing-title {
+        margin: 8px 0 10px;
+        color: var(--kuac-ink);
+        font-size: 1.45rem;
+        font-weight: 900;
+        letter-spacing: -.03em;
+    }
+    .kuac-landing-sub {
+        margin-bottom: 14px;
+        color: #737986;
+        font-size: .92rem;
+    }
+    .kuac-feature-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 12px;
+        margin-bottom: 20px;
+    }
+    .kuac-feature-card {
+        min-height: 128px;
+        padding: 18px;
+        border: 1px solid #e8e9ee;
+        border-radius: 17px;
+        background: #ffffff;
+        box-shadow: 0 6px 20px rgba(15,23,42,.035);
+    }
+    .kuac-feature-card.red { background: linear-gradient(145deg, #fff7f8, #ffffff); }
+    .kuac-feature-card.blue { background: linear-gradient(145deg, #f5f9ff, #ffffff); }
+    .kuac-feature-card.green { background: linear-gradient(145deg, #f4fbf7, #ffffff); }
+    .kuac-feature-card.purple { background: linear-gradient(145deg, #faf6ff, #ffffff); }
+    .kuac-feature-icon {
+        width: 38px;
+        height: 38px;
+        display: grid;
+        place-items: center;
+        margin-bottom: 12px;
+        border-radius: 12px;
+        background: #fff0f2;
+        color: var(--kuac-red);
+        font-weight: 900;
+        font-size: 1.05rem;
+    }
+    .kuac-feature-card h4 {
+        margin: 0 0 7px;
+        color: #252a35;
+        font-size: 1rem;
+        font-weight: 850;
+    }
+    .kuac-feature-card p {
+        margin: 0;
+        color: #717784;
+        font-size: .82rem;
+        line-height: 1.5;
+    }
+    .kuac-login-callout {
+        margin-top: 8px;
+        padding: 18px 20px;
+        border: 1px solid #f0dfe2;
+        border-radius: 16px;
+        background: linear-gradient(100deg, #fff7f8, #fffdfd);
+        color: #535966;
+        line-height: 1.65;
+    }
+    .kuac-login-callout strong {
+        color: var(--kuac-red);
+    }
+
     /* Footer */
     .kuac-footer {
         margin-top: 34px;
@@ -339,6 +408,9 @@ st.markdown(
         }
         .kuac-hero-visual {
             display: none;
+        }
+        .kuac-feature-grid {
+            grid-template-columns: 1fr 1fr;
         }
         .kuac-footer {
             grid-template-columns: auto 1fr;
@@ -852,58 +924,61 @@ with st.sidebar:
         else:
             st.warning("먼저 '프로젝트 설정' 탭에서 과목을 만들어 주세요.")
 
-    st.divider()
-    st.markdown("### AI 연결")
+        st.divider()
+        st.markdown("### AI 연결")
 
-    st.session_state.provider = st.selectbox(
-        "AI 제공자",
-        ["고려대 API Gateway", "OpenAI API"],
-        index=0 if st.session_state.get("provider", "고려대 API Gateway") == "고려대 API Gateway" else 1,
-    )
+        st.session_state.provider = st.selectbox(
+            "AI 제공자",
+            ["고려대 API Gateway", "OpenAI API"],
+            index=0 if st.session_state.get("provider", "고려대 API Gateway") == "고려대 API Gateway" else 1,
+        )
 
-    st.session_state.user_api_key = st.text_input(
-        "내 API Key",
-        value=st.session_state.get("user_api_key", ""),
-        type="password",
-        placeholder="본인의 API Key를 입력",
-        help=(
-            "입력한 키는 이 앱의 현재 브라우저 세션에서 AI 호출에만 사용하며, "
-            "GitHub나 학습 DB에 저장하지 않습니다."
-        ),
-    )
+        st.session_state.user_api_key = st.text_input(
+            "내 API Key",
+            value=st.session_state.get("user_api_key", ""),
+            type="password",
+            placeholder="본인의 API Key를 입력",
+            help=(
+                "입력한 키는 이 앱의 현재 브라우저 세션에서 AI 호출에만 사용하며, "
+                "GitHub나 학습 DB에 저장하지 않습니다."
+            ),
+        )
 
-    default_model = st.session_state.get("user_model", "gpt-5.6-luna")
-    st.session_state.user_model = st.text_input(
-        "모델",
-        value=default_model,
-        help=(
-            "고려대 API 사용 시 학교 API Gateway의 모델 ID를 입력하세요. "
-            "예: gpt-5.6-luna"
-        ),
-    )
+        default_model = st.session_state.get("user_model", "gpt-5.6-luna")
+        st.session_state.user_model = st.text_input(
+            "모델",
+            value=default_model,
+            help=(
+                "고려대 API 사용 시 학교 API Gateway의 모델 ID를 입력하세요. "
+                "예: gpt-5.6-luna"
+            ),
+        )
 
-    if st.session_state.provider == "고려대 API Gateway":
-        st.caption("학교 API Gateway 사용 · 사용량은 입력한 본인 계정의 API 크레딧에서 차감됩니다.")
+        if st.session_state.provider == "고려대 API Gateway":
+            st.caption("학교 API Gateway 사용 · 사용량은 입력한 본인 계정의 API 크레딧에서 차감됩니다.")
+        else:
+            st.caption("OpenAI 직접 API 사용 · 사용량은 입력한 본인 OpenAI API 계정에서 차감됩니다.")
+
+        if st.session_state.user_api_key:
+            st.success("개인 API Key 입력됨")
+        else:
+            st.warning("AI 기능을 사용하려면 본인의 API Key를 입력해 주세요.")
+
+        st.caption(
+            f"현재 세션 AI 호출: {int(st.session_state.get('ai_call_count', 0))} / 30"
+        )
+
+        st.divider()
+        if st.session_state.chunks:
+            lecture_count = sum(c["kind"] == "lecture" for c in st.session_state.chunks)
+            exam_count = sum(c["kind"] == "exam" for c in st.session_state.chunks)
+            project_label = st.session_state.get("current_project_name") or "현재 세션"
+            st.success(f"{project_label} · 강의 {lecture_count} chunks / 기출 {exam_count} chunks")
+        else:
+            st.warning("아직 분석된 자료가 없습니다.")
+
     else:
-        st.caption("OpenAI 직접 API 사용 · 사용량은 입력한 본인 OpenAI API 계정에서 차감됩니다.")
-
-    if st.session_state.user_api_key:
-        st.success("개인 API Key 입력됨")
-    else:
-        st.warning("AI 기능을 사용하려면 본인의 API Key를 입력해 주세요.")
-
-    st.caption(
-        f"현재 세션 AI 호출: {int(st.session_state.get('ai_call_count', 0))} / 30"
-    )
-
-    st.divider()
-    if st.session_state.chunks:
-        lecture_count = sum(c["kind"] == "lecture" for c in st.session_state.chunks)
-        exam_count = sum(c["kind"] == "exam" for c in st.session_state.chunks)
-        project_label = st.session_state.get("current_project_name") or "현재 세션"
-        st.success(f"{project_label} · 강의 {lecture_count} chunks / 기출 {exam_count} chunks")
-    else:
-        st.warning("아직 분석된 자료가 없습니다.")
+        st.caption("로그인 후 프로젝트와 AI 연결 설정을 사용할 수 있습니다.")
 
     st.markdown(
         """
@@ -917,37 +992,80 @@ with st.sidebar:
     )
 
 
-st.markdown(
-    f"""
-    <section class="kuac-hero">
-        <div class="kuac-hero-copy">
-            <div class="kuac-eyebrow">AI와 함께, 더 깊이 배우는 오늘</div>
-            <h1>AI 학습 <span>도우미</span></h1>
-            <div class="kuac-brandline">
-                <strong>KUAC</strong> · Korea University AI Creators
+if not cloud_logged_in():
+    st.markdown(
+        f"""
+        <section class="kuac-hero">
+            <div class="kuac-hero-copy">
+                <div class="kuac-eyebrow">AI와 함께, 더 깊이 배우는 오늘</div>
+                <h1>AI 학습 <span>도우미</span></h1>
+                <div class="kuac-brandline">
+                    <strong>KUAC</strong> · Korea University AI Creators
+                </div>
+                <div class="kuac-hero-desc">
+                    강의자료와 기출문제를 기반으로 개념을 확인하고, 취약점을 찾아,
+                    나에게 필요한 맞춤 문제와 상세한 피드백까지 이어지는 AI 학습 파트너입니다.
+                </div>
+                <div class="kuac-chips">
+                    <div class="kuac-chip"><b>▣</b> 강의자료 기반 학습</div>
+                    <div class="kuac-chip"><b>●</b> 개념 확인</div>
+                    <div class="kuac-chip"><b>✎</b> 맞춤 문제 생성</div>
+                    <div class="kuac-chip"><b>▥</b> 학습 현황 분석</div>
+                </div>
             </div>
-            <div class="kuac-hero-desc">
-                강의자료와 기출문제를 기반으로 개념을 확인하고, 취약점을 찾아,
-                나에게 필요한 맞춤 문제와 상세한 피드백까지 이어지는 AI 학습 파트너입니다.
+            <div class="kuac-hero-visual">
+                <img class="kuac-watermark" src="{KUAC_MARK_DATA_URI}" alt="">
+                <div class="kuac-hero-quote">
+                    “AI와 함께,<br>지식의 가능성을 넓히다.”
+                    <small>KUAC · Korea University AI Creators</small>
+                </div>
             </div>
-            <div class="kuac-chips">
-                <div class="kuac-chip"><b>▣</b> 강의자료 기반 학습</div>
-                <div class="kuac-chip"><b>●</b> 개념 확인</div>
-                <div class="kuac-chip"><b>✎</b> 맞춤 문제 생성</div>
-                <div class="kuac-chip"><b>▥</b> 학습 현황 분석</div>
+        </section>
+
+        <div class="kuac-landing-title">AI 학습 기능</div>
+        <div class="kuac-landing-sub">내 강의자료를 바탕으로, 확인부터 반복 학습까지 한 흐름으로 이어집니다.</div>
+
+        <div class="kuac-feature-grid">
+            <div class="kuac-feature-card red">
+                <div class="kuac-feature-icon">▣</div>
+                <h4>강의자료 기반 학습</h4>
+                <p>강의자료와 기출문제를 과목별 프로젝트에 저장하고 필요한 내용만 찾아 학습합니다.</p>
+            </div>
+            <div class="kuac-feature-card blue">
+                <div class="kuac-feature-icon">?</div>
+                <h4>개념 확인</h4>
+                <p>AI 질문에 직접 답하면서 단순 암기가 아니라 실제 이해도를 확인합니다.</p>
+            </div>
+            <div class="kuac-feature-card green">
+                <div class="kuac-feature-icon">✎</div>
+                <h4>맞춤 문제</h4>
+                <p>확인된 취약 개념을 바탕으로 개념형·계산형 문제와 피드백을 제공합니다.</p>
+            </div>
+            <div class="kuac-feature-card purple">
+                <div class="kuac-feature-icon">▥</div>
+                <h4>학습 현황</h4>
+                <p>과목별 점수와 반복 취약 개념을 기록해 다음 학습 방향을 확인할 수 있습니다.</p>
             </div>
         </div>
-        <div class="kuac-hero-visual">
-            <img class="kuac-watermark" src="{KUAC_MARK_DATA_URI}" alt="">
-            <div class="kuac-hero-quote">
-                “AI와 함께,<br>지식의 가능성을 넓히다.”
-                <small>KUAC · Korea University AI Creators</small>
+
+        <div class="kuac-login-callout">
+            <strong>학습을 시작하려면</strong> 왼쪽의 <b>학습 기록 계정</b>에서 로그인하거나
+            처음 사용하는 경우 새 학습 ID를 만들어 주세요.
+        </div>
+
+        <div class="kuac-footer">
+            <div class="kuac-footer-mark">“</div>
+            <div class="kuac-footer-text">하고싶은 일이 있다면, 함께</div>
+            <div class="kuac-footer-brand">
+                <img src="{KUAC_LOGO_DATA_URI}" alt="KUAC logo">
+                <span>KUAC · Korea University AI Creators</span>
             </div>
         </div>
-    </section>
-    """,
-    unsafe_allow_html=True,
-)
+        """,
+        unsafe_allow_html=True,
+    )
+    st.stop()
+
 
 tab_projects, tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
     ["프로젝트 설정", "자료 등록", "개념 확인", "맞춤 문제", "학습 현황"]
@@ -959,18 +1077,20 @@ tab_projects, tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
 # -------------------------
 with tab_projects:
     st.subheader("내 학습 프로젝트")
-    st.write("과목별로 강의자료, 기출문제, 학습 기록과 취약점을 분리해서 관리합니다.")
+    st.caption("과목별로 강의자료, 기출문제, 학습 기록과 취약점을 분리해서 관리합니다.")
 
-    if not cloud_logged_in():
-        st.info("프로젝트를 저장하려면 왼쪽에서 학습 ID로 로그인해 주세요.")
-    else:
+    if cloud_logged_in():
         with st.form("new_project_form", clear_on_submit=True):
-            c1, c2 = st.columns([2, 3])
-            with c1:
-                new_project_name = st.text_input("새 프로젝트 이름", placeholder="예: 물리화학")
-            with c2:
-                new_project_desc = st.text_input("설명 (선택)", placeholder="예: 2학기 중간고사 대비")
-            create_clicked = st.form_submit_button("새 프로젝트 만들기", type="primary")
+            new_project_name = st.text_input(
+                "새 프로젝트 이름",
+                placeholder="예: 물리화학",
+            )
+            new_project_desc = ""
+            create_clicked = st.form_submit_button(
+                "새 프로젝트 만들기",
+                type="primary",
+                use_container_width=True,
+            )
         if create_clicked:
             try:
                 created = create_project(
