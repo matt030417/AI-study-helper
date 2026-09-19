@@ -10,12 +10,15 @@ import streamlit as st
 
 from ai_engine import AIEngine
 from cloud_storage import (
+    create_chapter,
     create_project,
+    delete_chapter,
     delete_project,
     delete_project_attempts,
     delete_project_file,
     download_project_file,
     load_attempts,
+    load_chapters,
     load_project_files,
     load_projects,
     normalize_username,
@@ -614,6 +617,10 @@ DEFAULTS = {
     "current_project_name": "",
     "loaded_material_project_id": "",
     "current_project_files": [],
+    "chapters": [],
+    "current_chapter_id": "",
+    "current_chapter_name": "",
+    "loaded_material_chapter_id": "",
 }
 for key, value in DEFAULTS.items():
     if key not in st.session_state:
@@ -670,6 +677,18 @@ def current_project_attempts() -> list[dict]:
     ]
 
 
+def current_chapter_attempts() -> list[dict]:
+    project_id = st.session_state.get("current_project_id", "")
+    chapter_id = st.session_state.get("current_chapter_id", "")
+    if not project_id or not chapter_id:
+        return []
+    return [
+        a for a in st.session_state.get("attempts", [])
+        if str(a.get("project_id") or "") == str(project_id)
+        and str(a.get("chapter_id") or "") == str(chapter_id)
+    ]
+
+
 class MemoryUpload:
     """Minimal UploadedFile-compatible wrapper for files downloaded from project storage."""
     def __init__(self, name: str, raw: bytes):
@@ -695,34 +714,102 @@ def reset_learning_screen_state(clear_materials: bool = True):
         st.session_state.current_project_files = []
 
 
-def set_current_project(project_id: str):
-    project = next((p for p in st.session_state.get("projects", []) if p["id"] == project_id), None)
-    st.session_state.current_project_id = project_id or ""
-    st.session_state.current_project_name = project["name"] if project else ""
-    st.session_state.weak_queue = rebuild_weak_queue(current_project_attempts())
-    if st.session_state.get("loaded_material_project_id") != project_id:
+def set_current_chapter(chapter_id: str):
+    chapter = next(
+        (c for c in st.session_state.get("chapters", []) if c["id"] == chapter_id),
+        None,
+    )
+    st.session_state.current_chapter_id = chapter_id or ""
+    st.session_state.current_chapter_name = chapter["name"] if chapter else ""
+    st.session_state.weak_queue = rebuild_weak_queue(current_chapter_attempts())
+
+    if st.session_state.get("loaded_material_chapter_id") != chapter_id:
         reset_learning_screen_state(clear_materials=True)
         st.session_state.loaded_material_project_id = ""
+        st.session_state.loaded_material_chapter_id = ""
+
+
+def refresh_current_project_chapters():
+    if not cloud_logged_in() or not st.session_state.get("current_project_id"):
+        st.session_state.chapters = []
+        set_current_chapter("")
+        return
+
+    chapters = load_chapters(
+        st.session_state.cloud_client,
+        st.session_state.cloud_user_id,
+        st.session_state.current_project_id,
+    )
+    st.session_state.chapters = chapters
+
+    valid_ids = {c["id"] for c in chapters}
+    current = st.session_state.get("current_chapter_id", "")
+    if current not in valid_ids:
+        current = chapters[0]["id"] if chapters else ""
+    set_current_chapter(current)
+
+
+def set_current_project(project_id: str):
+    project = next(
+        (p for p in st.session_state.get("projects", []) if p["id"] == project_id),
+        None,
+    )
+    changed = st.session_state.get("current_project_id") != (project_id or "")
+    st.session_state.current_project_id = project_id or ""
+    st.session_state.current_project_name = project["name"] if project else ""
+
+    if changed:
+        reset_learning_screen_state(clear_materials=True)
+        st.session_state.loaded_material_project_id = ""
+        st.session_state.loaded_material_chapter_id = ""
+        st.session_state.current_chapter_id = ""
+        st.session_state.current_chapter_name = ""
+
+    refresh_current_project_chapters()
+    st.session_state.weak_queue = rebuild_weak_queue(current_chapter_attempts())
 
 
 def load_current_project_materials(force: bool = False):
     if not cloud_logged_in() or not st.session_state.get("current_project_id"):
         return
+
     project_id = st.session_state.current_project_id
-    if not force and st.session_state.get("loaded_material_project_id") == project_id:
+    chapter_id = st.session_state.get("current_chapter_id", "")
+
+    if not chapter_id:
+        st.session_state.current_project_files = []
+        st.session_state.chunks = []
+        st.session_state.retriever = None
+        st.session_state.source_files = {}
+        st.session_state.loaded_material_project_id = project_id
+        st.session_state.loaded_material_chapter_id = ""
+        st.session_state.weak_queue = []
+        return
+
+    if (
+        not force
+        and st.session_state.get("loaded_material_project_id") == project_id
+        and st.session_state.get("loaded_material_chapter_id") == chapter_id
+    ):
         return
 
     files = load_project_files(
         st.session_state.cloud_client,
         st.session_state.cloud_user_id,
         project_id,
+        chapter_id,
     )
+
     page_records = []
     source_files = {}
     failed = []
+
     for meta in files:
         try:
-            raw = download_project_file(st.session_state.cloud_client, meta["storage_path"])
+            raw = download_project_file(
+                st.session_state.cloud_client,
+                meta["storage_path"],
+            )
             wrapped = MemoryUpload(meta["file_name"], raw)
             page_records.extend(extract_uploaded_file(wrapped, meta["kind"]))
             source_files[meta["file_name"]] = {
@@ -739,27 +826,35 @@ def load_current_project_materials(force: bool = False):
     st.session_state.retriever = LocalRetriever(chunks) if chunks else None
     st.session_state.source_files = source_files
     st.session_state.loaded_material_project_id = project_id
+    st.session_state.loaded_material_chapter_id = chapter_id
     reset_learning_screen_state(clear_materials=False)
-    st.session_state.weak_queue = rebuild_weak_queue(current_project_attempts())
+    st.session_state.weak_queue = rebuild_weak_queue(current_chapter_attempts())
+
     if failed:
-        st.warning("일부 프로젝트 파일을 불러오지 못했습니다: " + " / ".join(failed[:3]))
+        st.warning("일부 단원 파일을 불러오지 못했습니다: " + " / ".join(failed[:3]))
+
 
 
 def record_attempt(attempt: dict):
     """Save the learning result under the selected project."""
     local_attempt = dict(attempt)
     project_id = st.session_state.get("current_project_id", "")
+    chapter_id = st.session_state.get("current_chapter_id", "")
     local_attempt["project_id"] = project_id
+    local_attempt["chapter_id"] = chapter_id
 
     if cloud_logged_in():
         if not project_id:
             st.warning("프로젝트가 선택되지 않아 학습 기록을 영구 저장하지 못했습니다.")
+        elif not chapter_id:
+            st.warning("학습 단원이 선택되지 않아 학습 기록을 영구 저장하지 못했습니다.")
         else:
             try:
                 saved = save_attempt(
                     st.session_state.cloud_client,
                     st.session_state.cloud_user_id,
                     project_id,
+                    chapter_id,
                     local_attempt,
                 )
                 st.session_state.attempts.append(saved)
@@ -803,6 +898,10 @@ def clear_cloud_session():
     st.session_state.current_project_id = ""
     st.session_state.current_project_name = ""
     st.session_state.loaded_material_project_id = ""
+    st.session_state.chapters = []
+    st.session_state.current_chapter_id = ""
+    st.session_state.current_chapter_name = ""
+    st.session_state.loaded_material_chapter_id = ""
     reset_learning_screen_state(clear_materials=True)
 
 def get_provider_config():
@@ -1065,6 +1164,10 @@ with st.sidebar:
             st.caption(
                 f"현재 프로젝트 · **{st.session_state.current_project_name}**"
             )
+            if st.session_state.get("current_chapter_name"):
+                st.caption(
+                    f"현재 단원 · **{st.session_state.current_chapter_name}**"
+                )
         elif st.session_state.get("projects"):
             st.caption("프로젝트 설정 탭에서 학습할 과목을 선택해 주세요.")
         else:
@@ -1217,11 +1320,46 @@ if not cloud_logged_in():
 if (
     cloud_logged_in()
     and st.session_state.get("current_project_id")
-    and st.session_state.get("loaded_material_project_id")
-        != st.session_state.get("current_project_id")
+    and (
+        st.session_state.get("loaded_material_project_id")
+            != st.session_state.get("current_project_id")
+        or st.session_state.get("loaded_material_chapter_id")
+            != st.session_state.get("current_chapter_id")
+    )
 ):
     with st.spinner("현재 프로젝트 자료를 불러오는 중..."):
         load_current_project_materials()
+
+if cloud_logged_in() and st.session_state.get("current_project_id"):
+    if st.session_state.get("chapters"):
+        chapter_map = {c["id"]: c["name"] for c in st.session_state.chapters}
+        chapter_ids = list(chapter_map.keys())
+        current_chapter = st.session_state.get("current_chapter_id", "")
+        chapter_index = chapter_ids.index(current_chapter) if current_chapter in chapter_ids else 0
+
+        chapter_left, chapter_right = st.columns([3, 2])
+        with chapter_left:
+            selected_chapter_id = st.selectbox(
+                "현재 학습 단원",
+                options=chapter_ids,
+                index=chapter_index,
+                format_func=lambda x: chapter_map[x],
+                key=f"chapter_selector_{st.session_state.current_project_id}",
+            )
+        with chapter_right:
+            st.caption("취약 개념과 문제 출제는 **현재 단원 안에서만** 이어집니다.")
+
+        if selected_chapter_id != st.session_state.get("current_chapter_id"):
+            set_current_chapter(selected_chapter_id)
+            with st.spinner("선택한 단원 자료를 불러오는 중..."):
+                load_current_project_materials(force=True)
+            st.rerun()
+    else:
+        st.info(
+            "현재 프로젝트에 학습 단원이 없습니다. "
+            "'자료 등록' 탭에서 첫 단원을 만들어 주세요."
+        )
+
 
 tab_projects, tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
     ["프로젝트 설정", "자료 등록", "개념 확인", "맞춤 문제", "학습 현황"]
@@ -1261,6 +1399,9 @@ with tab_projects:
                 )
                 set_current_project(created["id"])
                 st.session_state.current_project_files = []
+                st.session_state.chapters = []
+                st.session_state.current_chapter_id = ""
+                st.session_state.current_chapter_name = ""
                 st.success(f"'{created['name']}' 프로젝트를 만들었습니다.")
                 st.rerun()
             except Exception as e:
@@ -1421,11 +1562,88 @@ with tab_projects:
 # -------------------------
 with tab_upload:
     st.subheader("강의자료 / 기출문제 등록")
+
     if cloud_logged_in() and not st.session_state.get("current_project_id"):
-        st.warning("먼저 0번 '프로젝트' 탭에서 과목/프로젝트를 만들어 주세요.")
+        st.warning("먼저 '프로젝트 설정' 탭에서 과목/프로젝트를 만들어 주세요.")
+        st.stop()
+
+    if cloud_logged_in() and st.session_state.get("current_project_id"):
+        st.markdown("### 학습 단원 관리")
+        st.caption(
+            "한 과목 안에서도 Chapter별로 자료와 취약 개념을 분리합니다. "
+            "예: Chapter 3 이온결합 / Chapter 12 반응속도론"
+        )
+
+        new_col, delete_col = st.columns([3, 1])
+        with new_col:
+            with st.form("new_chapter_form", clear_on_submit=True):
+                new_chapter_name = st.text_input(
+                    "새 학습 단원",
+                    placeholder="예: Chapter 3 이온결합",
+                )
+                make_chapter = st.form_submit_button(
+                    "단원 만들기",
+                    type="primary",
+                    use_container_width=True,
+                )
+            if make_chapter:
+                try:
+                    created_chapter = create_chapter(
+                        st.session_state.cloud_client,
+                        st.session_state.cloud_user_id,
+                        st.session_state.current_project_id,
+                        new_chapter_name,
+                    )
+                    refresh_current_project_chapters()
+                    set_current_chapter(created_chapter["id"])
+                    load_current_project_materials(force=True)
+                    st.success(f"'{created_chapter['name']}' 단원을 만들었습니다.")
+                    st.rerun()
+                except Exception as e:
+                    if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                        st.error("같은 이름의 학습 단원이 이미 있습니다.")
+                    else:
+                        st.error(f"학습 단원 생성 실패: {e}")
+
+        with delete_col:
+            if st.session_state.get("current_chapter_id"):
+                st.write("")
+                st.write("")
+                confirm_delete_chapter = st.checkbox(
+                    "현재 단원 삭제",
+                    key="confirm_delete_chapter",
+                )
+                if st.button(
+                    "삭제",
+                    key="delete_chapter_button",
+                    disabled=not confirm_delete_chapter,
+                    use_container_width=True,
+                ):
+                    try:
+                        delete_chapter(
+                            st.session_state.cloud_client,
+                            st.session_state.cloud_user_id,
+                            st.session_state.current_project_id,
+                            st.session_state.current_chapter_id,
+                        )
+                        st.session_state.current_chapter_id = ""
+                        st.session_state.current_chapter_name = ""
+                        refresh_current_project_chapters()
+                        load_current_project_materials(force=True)
+                        st.success("학습 단원을 삭제했습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"학습 단원 삭제 실패: {e}")
+
+    if not st.session_state.get("current_chapter_id"):
+        st.warning("자료를 등록하려면 먼저 학습 단원을 만들어 주세요.")
         st.stop()
     if st.session_state.get("current_project_name"):
-        st.info(f"현재 프로젝트: **{st.session_state.current_project_name}** · 여기에 등록한 자료만 이 과목에서 사용됩니다.")
+        st.info(
+            f"현재 프로젝트: **{st.session_state.current_project_name}** · "
+            f"현재 단원: **{st.session_state.current_chapter_name}** · "
+            "이 단원의 자료만 질문과 맞춤 문제에 사용됩니다."
+        )
     st.caption("PDF, PPTX, TXT, MD를 지원합니다. 로그인 상태에서는 업로드한 자료가 현재 프로젝트에 저장되어 다음 접속에서도 다시 불러와집니다.")
 
     if cloud_logged_in() and st.session_state.get("current_project_id"):
@@ -1511,6 +1729,7 @@ with tab_upload:
                                     st.session_state.cloud_client,
                                     st.session_state.cloud_user_id,
                                     st.session_state.current_project_id,
+                                    st.session_state.current_chapter_id,
                                     f.name,
                                     "lecture",
                                     f.getvalue(),
@@ -1520,6 +1739,7 @@ with tab_upload:
                                     st.session_state.cloud_client,
                                     st.session_state.cloud_user_id,
                                     st.session_state.current_project_id,
+                                    st.session_state.current_chapter_id,
                                     f.name,
                                     "exam",
                                     f.getvalue(),
@@ -1536,9 +1756,10 @@ with tab_upload:
                     st.session_state.oral_eval_context = []
                     st.session_state.practice = None
                     st.session_state.practice_eval = None
-                    # 로그인 사용자의 과거 취약 개념은 유지한다.
-                    if not cloud_logged_in():
-                        st.session_state.weak_queue = []
+                    # 현재 단원의 취약 개념만 다시 연결한다.
+                    st.session_state.weak_queue = rebuild_weak_queue(
+                        current_chapter_attempts()
+                    )
                     st.success(f"완료: {len(page_records)}개 페이지/슬라이드 → {len(chunks)}개 학습 chunk")
                 else:
                     st.error("추출된 텍스트가 없습니다. 스캔 PDF라면 텍스트 PDF로 변환해 주세요.")
@@ -1559,6 +1780,12 @@ with tab_upload:
 with tab_oral:
     st.subheader("개념 확인")
 
+    if st.session_state.get("current_chapter_name"):
+        st.caption(
+            f"현재 단원: **{st.session_state.current_chapter_name}** · "
+            "이 단원의 자료와 취약 개념만 반영합니다."
+        )
+
     if not st.session_state.chunks:
         st.info("먼저 '자료 등록' 탭에서 자료를 등록해 주세요.")
     else:
@@ -1573,10 +1800,19 @@ with tab_oral:
         with c3:
             difficulty = st.selectbox("난이도", ["easy", "medium", "hard"], index=1)
 
-        weak_hint = st.session_state.weak_queue[0] if st.session_state.weak_queue else ""
+        use_chapter_weakness = st.checkbox(
+            "현재 단원의 취약 개념을 다음 질문에 반영",
+            value=True,
+            key="use_chapter_weakness",
+        )
+        weak_hint = (
+            st.session_state.weak_queue[0]
+            if use_chapter_weakness and st.session_state.weak_queue
+            else ""
+        )
 
         if weak_hint:
-            st.info(f"최근 취약 개념을 다음 질문에 반영할 수 있습니다: **{weak_hint}**")
+            st.info(f"현재 단원의 취약 개념을 반영합니다: **{weak_hint}**")
 
         if st.button("새 구술 질문 만들기", type="primary"):
             engine = get_engine()
@@ -1703,6 +1939,12 @@ with tab_oral:
 with tab_practice:
     st.subheader("취약 개념 맞춤 문제")
 
+    if st.session_state.get("current_chapter_name"):
+        st.caption(
+            f"현재 단원: **{st.session_state.current_chapter_name}** · "
+            "다른 단원의 취약 개념은 자동으로 가져오지 않습니다."
+        )
+
     if not st.session_state.chunks:
         st.info("먼저 자료를 등록해 주세요.")
     else:
@@ -1724,7 +1966,7 @@ with tab_practice:
             )
 
         if known_weak:
-            st.caption("현재 취약 개념: " + " · ".join(known_weak[:8]))
+            st.caption("현재 단원의 취약 개념: " + " · ".join(known_weak[:8]))
 
         if st.button("맞춤 문제 생성", type="primary", key="make_practice"):
             if not weak_concept.strip():
@@ -1967,9 +2209,13 @@ with tab_dashboard:
         )
 
     if st.session_state.get("current_project_name"):
-        st.info(f"현재 프로젝트 **{st.session_state.current_project_name}**의 학습 현황만 보여줍니다.")
+        chapter_label = st.session_state.get("current_chapter_name") or "단원 미선택"
+        st.info(
+            f"현재 프로젝트 **{st.session_state.current_project_name}** · "
+            f"학습 단원 **{chapter_label}**의 학습 현황입니다."
+        )
 
-    attempts = current_project_attempts() if st.session_state.get("current_project_id") else list(st.session_state.get("attempts", []))
+    attempts = current_chapter_attempts() if st.session_state.get("current_chapter_id") else []
 
     if not attempts:
         st.info("아직 채점 기록이 없습니다. 개념 확인이나 맞춤 문제를 진행하면 여기에 누적됩니다.")
@@ -2025,32 +2271,9 @@ with tab_dashboard:
         )
 
         if cloud_logged_in():
-            st.caption("로그인 상태에서는 현재 프로젝트의 기록만 아래에서 삭제할 수 있습니다.")
-            delete_confirm = st.checkbox(
-                "현재 프로젝트의 저장된 학습 기록 삭제에 동의합니다.",
-                key="delete_cloud_confirm",
+            st.caption(
+                "단원별 기록은 해당 학습 단원에 연결되어 저장됩니다."
             )
-            if st.button(
-                "현재 프로젝트 학습 기록 삭제",
-                disabled=not delete_confirm,
-                key="delete_cloud_records",
-            ):
-                try:
-                    delete_project_attempts(
-                        st.session_state.cloud_client,
-                        st.session_state.cloud_user_id,
-                        st.session_state.current_project_id,
-                    )
-                    st.session_state.attempts = [
-                        a for a in st.session_state.attempts
-                        if a.get("project_id") != st.session_state.current_project_id
-                    ]
-                    st.session_state.weak_queue = []
-                    st.session_state.ai_call_count = 0
-                    st.success("현재 프로젝트의 학습 기록을 모두 삭제했습니다.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"저장 기록 삭제 실패: {e}")
         else:
             if st.button("현재 세션 학습 기록 초기화"):
                 st.session_state.attempts = []
