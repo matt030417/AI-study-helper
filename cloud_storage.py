@@ -111,6 +111,66 @@ def rename_project(client: Client, user_id: str, project_id: str, name: str, des
     return _normalize_project(response.data[0])
 
 
+
+def _normalize_chapter(row: dict[str, Any]) -> dict[str, Any]:
+    created = str(row.get("created_at") or "")
+    if "T" in created:
+        created = created.replace("T", " ")[:19]
+    return {
+        "id": str(row.get("id") or ""),
+        "project_id": str(row.get("project_id") or ""),
+        "name": row.get("name") or "학습 단원",
+        "created_at": created,
+    }
+
+
+def load_chapters(client: Client, user_id: str, project_id: str) -> list[dict]:
+    response = (
+        client.table("study_chapters")
+        .select("id,project_id,name,created_at")
+        .eq("user_id", user_id)
+        .eq("project_id", project_id)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    return [_normalize_chapter(x) for x in (response.data or [])]
+
+
+def create_chapter(client: Client, user_id: str, project_id: str, name: str) -> dict:
+    clean_name = name.strip()
+    if not clean_name:
+        raise ValueError("학습 단원 이름을 입력해 주세요.")
+    if len(clean_name) > 80:
+        raise ValueError("학습 단원 이름은 80자 이하로 입력해 주세요.")
+    response = (
+        client.table("study_chapters")
+        .insert({"user_id": user_id, "project_id": project_id, "name": clean_name})
+        .select("id,project_id,name,created_at")
+        .execute()
+    )
+    if not response.data:
+        raise RuntimeError("학습 단원 생성 결과를 받지 못했습니다.")
+    return _normalize_chapter(response.data[0])
+
+
+def delete_chapter(client: Client, user_id: str, project_id: str, chapter_id: str):
+    files = load_project_files(client, user_id, project_id, chapter_id)
+    paths = [x["storage_path"] for x in files if x.get("storage_path")]
+    if paths:
+        try:
+            client.storage.from_(STORAGE_BUCKET).remove(paths)
+        except Exception:
+            pass
+    return (
+        client.table("study_chapters")
+        .delete()
+        .eq("id", chapter_id)
+        .eq("project_id", project_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+
+
 def _normalize_file(row: dict[str, Any]) -> dict[str, Any]:
     created = str(row.get("created_at") or "")
     if "T" in created:
@@ -118,6 +178,7 @@ def _normalize_file(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": int(row.get("id")) if row.get("id") is not None else None,
         "project_id": str(row.get("project_id") or ""),
+        "chapter_id": str(row.get("chapter_id") or ""),
         "file_name": row.get("file_name") or "",
         "kind": row.get("kind") or "lecture",
         "suffix": row.get("suffix") or "",
@@ -127,15 +188,21 @@ def _normalize_file(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def load_project_files(client: Client, user_id: str, project_id: str) -> list[dict]:
-    response = (
+def load_project_files(
+    client: Client,
+    user_id: str,
+    project_id: str,
+    chapter_id: str | None = None,
+) -> list[dict]:
+    query = (
         client.table("project_files")
-        .select("id,project_id,file_name,kind,suffix,storage_path,size_bytes,created_at")
+        .select("id,project_id,chapter_id,file_name,kind,suffix,storage_path,size_bytes,created_at")
         .eq("user_id", user_id)
         .eq("project_id", project_id)
-        .order("created_at", desc=False)
-        .execute()
     )
+    if chapter_id:
+        query = query.eq("chapter_id", chapter_id)
+    response = query.order("created_at", desc=False).execute()
     return [_normalize_file(x) for x in (response.data or [])]
 
 
@@ -148,6 +215,7 @@ def save_project_file(
     client: Client,
     user_id: str,
     project_id: str,
+    chapter_id: str,
     file_name: str,
     kind: str,
     raw: bytes,
@@ -158,6 +226,7 @@ def save_project_file(
         .select("id,storage_path")
         .eq("user_id", user_id)
         .eq("project_id", project_id)
+        .eq("chapter_id", chapter_id)
         .eq("file_name", file_name)
         .eq("kind", kind)
         .execute()
@@ -172,7 +241,7 @@ def save_project_file(
         client.table("project_files").delete().eq("id", row["id"]).eq("user_id", user_id).execute()
 
     safe_name = file_name.replace("/", "_").replace("\\", "_")
-    storage_path = f"{user_id}/{project_id}/{uuid4().hex}_{safe_name}"
+    storage_path = f"{user_id}/{project_id}/{chapter_id}/{uuid4().hex}_{safe_name}"
     content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
     client.storage.from_(STORAGE_BUCKET).upload(
         path=storage_path,
@@ -186,6 +255,7 @@ def save_project_file(
                 {
                     "user_id": user_id,
                     "project_id": project_id,
+                    "chapter_id": chapter_id,
                     "file_name": file_name,
                     "kind": kind,
                     "suffix": suffix,
@@ -193,7 +263,7 @@ def save_project_file(
                     "size_bytes": len(raw),
                 }
             )
-            .select("id,project_id,file_name,kind,suffix,storage_path,size_bytes,created_at")
+            .select("id,project_id,chapter_id,file_name,kind,suffix,storage_path,size_bytes,created_at")
             .execute()
         )
     except Exception:
@@ -246,6 +316,7 @@ def _normalize_attempt(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row.get("id"),
         "project_id": str(row.get("project_id") or ""),
+        "chapter_id": str(row.get("chapter_id") or ""),
         "created_at": created,
         "stage": row.get("stage") or "",
         "concept": row.get("concept") or "",
@@ -260,27 +331,38 @@ def _normalize_attempt(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def load_attempts(client: Client, user_id: str, project_id: str | None = None, limit: int = 1000) -> list[dict]:
+def load_attempts(
+    client: Client,
+    user_id: str,
+    project_id: str | None = None,
+    chapter_id: str | None = None,
+    limit: int = 1000,
+) -> list[dict]:
     query = (
         client.table("learning_attempts")
         .select(
-            "id,project_id,created_at,stage,concept,score,verdict,error_type,"
+            "id,project_id,chapter_id,created_at,stage,concept,score,verdict,error_type,"
             "question,student_answer,submitted_work_file,feedback,weak_concepts"
         )
         .eq("user_id", user_id)
     )
     if project_id:
         query = query.eq("project_id", project_id)
+    if chapter_id:
+        query = query.eq("chapter_id", chapter_id)
     response = query.order("created_at", desc=False).limit(limit).execute()
     return [_normalize_attempt(row) for row in (response.data or [])]
 
 
-def save_attempt(client: Client, user_id: str, project_id: str, attempt: dict) -> dict:
+def save_attempt(client: Client, user_id: str, project_id: str, chapter_id: str, attempt: dict) -> dict:
     if not project_id:
         raise ValueError("현재 프로젝트가 선택되지 않았습니다.")
+    if not chapter_id:
+        raise ValueError("현재 학습 단원이 선택되지 않았습니다.")
     payload = {
         "user_id": user_id,
         "project_id": project_id,
+        "chapter_id": chapter_id,
         "stage": attempt.get("stage") or "",
         "concept": attempt.get("concept") or "",
         "score": int(attempt.get("score") or 0),
@@ -296,7 +378,7 @@ def save_attempt(client: Client, user_id: str, project_id: str, attempt: dict) -
         client.table("learning_attempts")
         .insert(payload)
         .select(
-            "id,project_id,created_at,stage,concept,score,verdict,error_type,"
+            "id,project_id,chapter_id,created_at,stage,concept,score,verdict,error_type,"
             "question,student_answer,submitted_work_file,feedback,weak_concepts"
         )
         .execute()
