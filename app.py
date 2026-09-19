@@ -584,6 +584,44 @@ st.markdown(
         margin: 0 !important;
     }
 
+
+
+    .study-question-label {
+        margin-bottom: .45rem;
+        color: var(--kuac-red);
+        font-size: .78rem;
+        font-weight: 850;
+        letter-spacing: .03em;
+    }
+
+    /* Markdown/LaTeX 문제 카드 안쪽 가독성 */
+    div[class*="st-key-formatted_question_"] {
+        border-radius: 16px;
+    }
+
+    div[class*="st-key-formatted_question_"] [data-testid="stMarkdownContainer"] {
+        font-size: 1.02rem;
+        line-height: 1.72;
+    }
+
+    div[class*="st-key-formatted_question_"] table {
+        width: 100%;
+        margin: .8rem 0;
+        border-collapse: collapse;
+    }
+
+    div[class*="st-key-formatted_question_"] th,
+    div[class*="st-key-formatted_question_"] td {
+        padding: .55rem .7rem;
+        border: 1px solid var(--st-border-color);
+        text-align: center;
+    }
+
+    div[class*="st-key-formatted_question_"] th {
+        background: var(--st-secondary-background-color);
+        font-weight: 800;
+    }
+
 </style>
     """,
     unsafe_allow_html=True,
@@ -625,6 +663,14 @@ DEFAULTS = {
 for key, value in DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = value
+
+
+
+def render_study_text(text: str):
+    """Render AI-generated study content with Markdown + LaTeX support."""
+    if not text:
+        return
+    st.markdown(str(text), unsafe_allow_html=False)
 
 
 def _secret(name: str, default=""):
@@ -1840,7 +1886,16 @@ with tab_oral:
         q = st.session_state.question
         if q:
             st.markdown("### 교수 질문")
-            st.info(q["question"])
+            question_key = hashlib.md5(q["question"].encode("utf-8")).hexdigest()[:10]
+            with st.container(
+                border=True,
+                key=f"formatted_question_oral_{question_key}",
+            ):
+                st.markdown(
+                    '<div class="study-question-label">CONCEPT CHECK</div>',
+                    unsafe_allow_html=True,
+                )
+                render_study_text(q["question"])
             st.caption(
                 f"유형: {q['question_type']} · 난이도: {q['difficulty']} · "
                 f"확인 개념: {', '.join(q['target_concepts'])}"
@@ -1928,7 +1983,7 @@ with tab_oral:
                 st.warning("취약 개념: " + ", ".join(ev["weak_concepts"]))
 
             with st.expander("모범 답안 확인"):
-                st.write(ev["ideal_answer"])
+                render_study_text(ev["ideal_answer"])
 
             st.caption("확인된 취약 개념은 자동으로 '맞춤 문제' 탭에 연결됩니다.")
 
@@ -1995,7 +2050,16 @@ with tab_practice:
         problem = st.session_state.practice
         if problem:
             st.markdown("### 연습 문제")
-            st.info(problem["problem"])
+            problem_key = hashlib.md5(problem["problem"].encode("utf-8")).hexdigest()[:10]
+            with st.container(
+                border=True,
+                key=f"formatted_question_practice_{problem_key}",
+            ):
+                st.markdown(
+                    '<div class="study-question-label">PRACTICE PROBLEM</div>',
+                    unsafe_allow_html=True,
+                )
+                render_study_text(problem["problem"])
             st.caption(
                 f"개념: {problem['concept']} · 유형: {problem['problem_type']} · "
                 f"난이도: {problem['difficulty']} · 답 형식: {problem['answer_format']}"
@@ -2018,7 +2082,6 @@ with tab_practice:
                 key="practice_work",
             )
 
-            problem_key = hashlib.md5(problem["problem"].encode("utf-8")).hexdigest()[:10]
             solution_file = st.file_uploader(
                 "손글씨 풀이 PDF / 사진 제출 (선택)",
                 type=["pdf", "jpg", "jpeg", "png"],
@@ -2187,9 +2250,9 @@ with tab_practice:
 
             with st.expander("정답 및 기준 풀이"):
                 st.markdown("**기준 답안**")
-                st.write(problem["reference_answer"])
+                render_study_text(problem["reference_answer"])
                 st.markdown("**풀이**")
-                st.write(problem["solution"])
+                render_study_text(problem["solution"])
 
 
 # -------------------------
