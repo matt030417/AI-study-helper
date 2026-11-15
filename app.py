@@ -753,6 +753,7 @@ def reset_learning_screen_state(clear_materials: bool = True):
         if key != "page_records" or clear_materials:
             st.session_state[key] = value
     st.session_state.pop("exam_requested_concept", None)
+    st.session_state.pop("reader_auto_attempts", None)
     st.session_state.question = None
     st.session_state.question_context = []
     st.session_state.oral_eval = None
@@ -987,15 +988,6 @@ def get_engine():
         st.error("왼쪽 사이드바에 본인의 API Key를 입력해 주세요.")
         return None
 
-    max_calls = 30
-    used = int(st.session_state.get("ai_call_count", 0))
-    if used >= max_calls:
-        st.error(
-            "현재 브라우저 세션에서 AI를 30회 호출했습니다. "
-            "새 학습 세션을 시작하려면 페이지를 다시 열어 주세요."
-        )
-        return None
-
     try:
         return AIEngine(cfg["api_key"], model=cfg["model"], base_url=cfg["base_url"])
     except Exception:
@@ -1227,9 +1219,9 @@ with st.sidebar:
                     f"현재 단원 · **{st.session_state.current_chapter_name}**"
                 )
         elif st.session_state.get("projects"):
-            st.caption("과목·단원 관리에서 학습할 과목을 선택해 주세요.")
+            st.caption("과목 목록에서 학습할 과목을 선택해 주세요.")
         else:
-            st.caption("과목·단원 관리에서 첫 과목을 만들어 주세요.")
+            st.caption("과목 목록에서 첫 과목을 만들어 주세요.")
 
         st.divider()
         st.markdown("### AI 연결")
@@ -1272,7 +1264,7 @@ with st.sidebar:
             st.warning("AI 기능을 사용하려면 본인의 API Key를 입력해 주세요.")
 
         st.caption(
-            f"현재 세션 AI 호출: {int(st.session_state.get('ai_call_count', 0))} / 30"
+            f"현재 세션 AI 호출: {int(st.session_state.get('ai_call_count', 0))}회"
         )
 
         st.divider()
@@ -1388,6 +1380,195 @@ if (
     with st.spinner("현재 프로젝트 자료를 불러오는 중..."):
         load_current_project_materials()
 
+st.subheader("내 학습 과목")
+st.caption("과목 카드를 선택하면 자료 설명·문제 풀이·학습 기록이 모두 해당 과목으로 전환됩니다.")
+if not st.session_state.projects:
+    st.info("아직 프로젝트가 없습니다. 첫 과목을 만들어 주세요.")
+else:
+    st.markdown("### 프로젝트 목록")
+    st.caption("학습할 과목 카드를 선택하면 해당 프로젝트의 자료와 학습 기록으로 전환됩니다.")
+
+    project_cols = st.columns(4)
+    for idx, project in enumerate(st.session_state.projects):
+        pa = [
+            a for a in st.session_state.attempts
+            if a.get("project_id") == project["id"]
+        ]
+
+        weak_counter = Counter()
+        for a in pa:
+            weak_counter.update(
+                [x for x in (a.get("weak_concepts") or []) if x]
+            )
+
+        top_weak_list = [
+            x for x, _ in weak_counter.most_common(2)
+        ]
+        top_weak = " · ".join(top_weak_list) if top_weak_list else "아직 없음"
+
+        avg_score = (
+            sum(a["score"] for a in pa) / len(pa)
+            if pa else None
+        )
+
+        is_current = (
+            project["id"]
+            == st.session_state.get("current_project_id")
+        )
+
+        with project_cols[idx % 4]:
+            with st.container(border=True):
+                title_col, select_col = st.columns([3.0, 1.45], gap="small")
+
+                with title_col:
+                    st.markdown(
+                        f"""
+                        <div class="project-card-title">
+                            {'📂' if is_current else '📁'} {project['name']}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                with select_col:
+                    if is_current:
+                        st.markdown(
+                            """
+                            <div class="project-selected-badge">선택됨</div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        with st.container(
+                            key=f"project_select_{project['id']}"
+                        ):
+                            if st.button(
+                                "선택",
+                                key=f"open_project_{project['id']}",
+                                help=f"{project['name']} 프로젝트 선택",
+                                width="stretch",
+                            ):
+                                set_current_project(project["id"])
+                                with st.spinner("프로젝트 자료를 불러오는 중..."):
+                                    load_current_project_materials(force=True)
+                                st.rerun()
+
+                st.markdown(
+                    f"""
+                    <div class="project-card-status {'project-current-label' if is_current else ''}">
+                        {'● 현재 학습 중' if is_current else '프로젝트 선택 후 학습'}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                stat1, stat2 = st.columns(2, gap="small")
+                with stat1:
+                    st.metric("학습 기록", len(pa))
+                with stat2:
+                    st.metric(
+                        "평균 점수",
+                        f"{avg_score:.1f}" if avg_score is not None else "-",
+                    )
+
+                st.markdown("**주요 취약 개념**")
+                st.markdown(
+                    f"""
+                    <div class="project-card-weak">{top_weak}</div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    st.write("")
+
+
+with st.expander("새 과목 만들기", expanded=not bool(st.session_state.projects)):
+    with st.form("new_project_form", clear_on_submit=True):
+        new_project_name = st.text_input(
+            "새 프로젝트 이름",
+            placeholder="예: 물리화학",
+        )
+        new_project_desc = ""
+        create_clicked = st.form_submit_button(
+            "새 프로젝트 만들기",
+            type="primary",
+            width="stretch",
+        )
+    if create_clicked:
+        try:
+            created = create_project(
+                st.session_state.cloud_client,
+                st.session_state.cloud_user_id,
+                new_project_name,
+                new_project_desc,
+            )
+            st.session_state.projects = load_projects(
+                st.session_state.cloud_client,
+                st.session_state.cloud_user_id,
+            )
+            set_current_project(created["id"])
+            st.session_state.current_project_files = []
+            st.session_state.chapters = []
+            st.session_state.current_chapter_id = ""
+            st.session_state.current_chapter_name = ""
+            st.success(f"'{created['name']}' 프로젝트를 만들었습니다.")
+            st.rerun()
+        except Exception as e:
+            if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                st.error("같은 이름의 프로젝트가 이미 있습니다.")
+            else:
+                st.error(f"프로젝트 생성 실패: {e}")
+
+
+current = next((p for p in st.session_state.projects if p["id"] == st.session_state.current_project_id), None)
+if current:
+    with st.expander("현재 프로젝트 이름/설명 수정 또는 삭제"):
+        edit_name = st.text_input("프로젝트 이름", value=current["name"], key=f"edit_project_name_{current['id']}")
+        edit_desc = st.text_input("설명", value=current.get("description", ""), key=f"edit_project_desc_{current['id']}")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("프로젝트 정보 저장", width="stretch"):
+                try:
+                    rename_project(
+                        st.session_state.cloud_client,
+                        st.session_state.cloud_user_id,
+                        current["id"],
+                        edit_name,
+                        edit_desc,
+                    )
+                    st.session_state.projects = load_projects(
+                        st.session_state.cloud_client,
+                        st.session_state.cloud_user_id,
+                    )
+                    set_current_project(current["id"])
+                    st.success("프로젝트 정보를 수정했습니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"수정 실패: {e}")
+        with c2:
+            delete_confirm = st.checkbox("프로젝트 삭제에 동의", key=f"project_delete_confirm_{current['id']}")
+            if st.button("프로젝트 삭제", disabled=not delete_confirm, width="stretch"):
+                try:
+                    delete_project(
+                        st.session_state.cloud_client,
+                        st.session_state.cloud_user_id,
+                        current["id"],
+                    )
+                    st.session_state.projects = load_projects(
+                        st.session_state.cloud_client,
+                        st.session_state.cloud_user_id,
+                    )
+                    next_id = st.session_state.projects[0]["id"] if st.session_state.projects else ""
+                    set_current_project(next_id)
+                    if next_id:
+                        load_current_project_materials(force=True)
+                    st.success("프로젝트와 해당 학습 기록·파일을 삭제했습니다.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"프로젝트 삭제 실패: {e}")
+
+
+
 if cloud_logged_in() and st.session_state.get("current_project_id"):
     if st.session_state.get("chapters"):
         chapter_map = {c["id"]: c["name"] for c in st.session_state.chapters}
@@ -1415,199 +1596,14 @@ if cloud_logged_in() and st.session_state.get("current_project_id"):
     else:
         st.info(
             "현재 프로젝트에 학습 단원이 없습니다. "
-            "'과목·단원 관리'를 열어 첫 단원을 만들어 주세요."
+            "아래 '학습 단원 추가·삭제'에서 첫 단원을 만들어 주세요."
         )
 
 
-if st.toggle("과목·단원 관리", value=not bool(st.session_state.get("current_chapter_id")), key="workspace_management"):
-    st.subheader("내 학습 프로젝트")
-    st.caption("과목별로 자료와 학습 기록을 분리해 관리하고, 아래 카드에서 학습할 프로젝트를 선택합니다.")
 
-    if cloud_logged_in():
-        with st.form("new_project_form", clear_on_submit=True):
-            new_project_name = st.text_input(
-                "새 프로젝트 이름",
-                placeholder="예: 물리화학",
-            )
-            new_project_desc = ""
-            create_clicked = st.form_submit_button(
-                "새 프로젝트 만들기",
-                type="primary",
-                width="stretch",
-            )
-        if create_clicked:
-            try:
-                created = create_project(
-                    st.session_state.cloud_client,
-                    st.session_state.cloud_user_id,
-                    new_project_name,
-                    new_project_desc,
-                )
-                st.session_state.projects = load_projects(
-                    st.session_state.cloud_client,
-                    st.session_state.cloud_user_id,
-                )
-                set_current_project(created["id"])
-                st.session_state.current_project_files = []
-                st.session_state.chapters = []
-                st.session_state.current_chapter_id = ""
-                st.session_state.current_chapter_name = ""
-                st.success(f"'{created['name']}' 프로젝트를 만들었습니다.")
-                st.rerun()
-            except Exception as e:
-                if "duplicate" in str(e).lower() or "unique" in str(e).lower():
-                    st.error("같은 이름의 프로젝트가 이미 있습니다.")
-                else:
-                    st.error(f"프로젝트 생성 실패: {e}")
-
-        if not st.session_state.projects:
-            st.info("아직 프로젝트가 없습니다. 첫 과목을 만들어 주세요.")
-        else:
-            st.markdown("### 프로젝트 목록")
-            st.caption("학습할 과목 카드를 선택하면 해당 프로젝트의 자료와 학습 기록으로 전환됩니다.")
-
-            project_cols = st.columns(4)
-            for idx, project in enumerate(st.session_state.projects):
-                pa = [
-                    a for a in st.session_state.attempts
-                    if a.get("project_id") == project["id"]
-                ]
-
-                weak_counter = Counter()
-                for a in pa:
-                    weak_counter.update(
-                        [x for x in (a.get("weak_concepts") or []) if x]
-                    )
-
-                top_weak_list = [
-                    x for x, _ in weak_counter.most_common(2)
-                ]
-                top_weak = " · ".join(top_weak_list) if top_weak_list else "아직 없음"
-
-                avg_score = (
-                    sum(a["score"] for a in pa) / len(pa)
-                    if pa else None
-                )
-
-                is_current = (
-                    project["id"]
-                    == st.session_state.get("current_project_id")
-                )
-
-                with project_cols[idx % 4]:
-                    with st.container(border=True):
-                        title_col, select_col = st.columns([3.0, 1.45], gap="small")
-
-                        with title_col:
-                            st.markdown(
-                                f"""
-                                <div class="project-card-title">
-                                    {'📂' if is_current else '📁'} {project['name']}
-                                </div>
-                                """,
-                                unsafe_allow_html=True,
-                            )
-
-                        with select_col:
-                            if is_current:
-                                st.markdown(
-                                    """
-                                    <div class="project-selected-badge">선택됨</div>
-                                    """,
-                                    unsafe_allow_html=True,
-                                )
-                            else:
-                                with st.container(
-                                    key=f"project_select_{project['id']}"
-                                ):
-                                    if st.button(
-                                        "선택",
-                                        key=f"open_project_{project['id']}",
-                                        help=f"{project['name']} 프로젝트 선택",
-                                        width="stretch",
-                                    ):
-                                        set_current_project(project["id"])
-                                        with st.spinner("프로젝트 자료를 불러오는 중..."):
-                                            load_current_project_materials(force=True)
-                                        st.rerun()
-
-                        st.markdown(
-                            f"""
-                            <div class="project-card-status {'project-current-label' if is_current else ''}">
-                                {'● 현재 학습 중' if is_current else '프로젝트 선택 후 학습'}
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-
-                        stat1, stat2 = st.columns(2, gap="small")
-                        with stat1:
-                            st.metric("학습 기록", len(pa))
-                        with stat2:
-                            st.metric(
-                                "평균 점수",
-                                f"{avg_score:.1f}" if avg_score is not None else "-",
-                            )
-
-                        st.markdown("**주요 취약 개념**")
-                        st.markdown(
-                            f"""
-                            <div class="project-card-weak">{top_weak}</div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
-
-            st.write("")
-
-            current = next((p for p in st.session_state.projects if p["id"] == st.session_state.current_project_id), None)
-            if current:
-                with st.expander("현재 프로젝트 이름/설명 수정 또는 삭제"):
-                    edit_name = st.text_input("프로젝트 이름", value=current["name"], key=f"edit_project_name_{current['id']}")
-                    edit_desc = st.text_input("설명", value=current.get("description", ""), key=f"edit_project_desc_{current['id']}")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if st.button("프로젝트 정보 저장", width="stretch"):
-                            try:
-                                rename_project(
-                                    st.session_state.cloud_client,
-                                    st.session_state.cloud_user_id,
-                                    current["id"],
-                                    edit_name,
-                                    edit_desc,
-                                )
-                                st.session_state.projects = load_projects(
-                                    st.session_state.cloud_client,
-                                    st.session_state.cloud_user_id,
-                                )
-                                set_current_project(current["id"])
-                                st.success("프로젝트 정보를 수정했습니다.")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"수정 실패: {e}")
-                    with c2:
-                        delete_confirm = st.checkbox("프로젝트 삭제에 동의", key=f"project_delete_confirm_{current['id']}")
-                        if st.button("프로젝트 삭제", disabled=not delete_confirm, width="stretch"):
-                            try:
-                                delete_project(
-                                    st.session_state.cloud_client,
-                                    st.session_state.cloud_user_id,
-                                    current["id"],
-                                )
-                                st.session_state.projects = load_projects(
-                                    st.session_state.cloud_client,
-                                    st.session_state.cloud_user_id,
-                                )
-                                next_id = st.session_state.projects[0]["id"] if st.session_state.projects else ""
-                                set_current_project(next_id)
-                                if next_id:
-                                    load_current_project_materials(force=True)
-                                st.success("프로젝트와 해당 학습 기록·파일을 삭제했습니다.")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"프로젝트 삭제 실패: {e}")
-
-
-    if cloud_logged_in() and st.session_state.get("current_project_id"):
+if st.session_state.get("current_project_id"):
+    st.markdown(f"### {st.session_state.current_project_name}")
+    with st.expander("학습 단원 추가·삭제", expanded=not bool(st.session_state.chapters)):
         st.markdown("### 학습 단원 관리")
         st.caption(
             "한 과목 안에서도 Chapter별로 자료와 취약 개념을 분리합니다. "
@@ -1651,7 +1647,7 @@ if st.toggle("과목·단원 관리", value=not bool(st.session_state.get("curre
                 st.write("")
                 confirm_delete_chapter = st.checkbox(
                     "현재 단원 삭제",
-                    key="confirm_delete_chapter",
+                    key=f"confirm_delete_chapter_{st.session_state.current_chapter_id}",
                 )
                 if st.button(
                     "삭제",
@@ -1674,6 +1670,7 @@ if st.toggle("과목·단원 관리", value=not bool(st.session_state.get("curre
                         st.rerun()
                     except Exception as e:
                         st.error(f"학습 단원 삭제 실패: {e}")
+
 
 
 

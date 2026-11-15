@@ -29,13 +29,14 @@ def scope() -> str:
     return hashlib.sha256(repr(values).encode()).hexdigest()[:12]
 
 
-def material_upload(kind: str, refresh):
+def material_upload(kind: str, refresh, optional: bool = False):
     label = "강의자료" if kind == "lecture" else "기출문제"
     if not st.session_state.get("current_chapter_id"):
         st.info("위의 과목·단원 관리에서 학습할 단원을 먼저 만들어 주세요.")
         return
     saved = [m for m in st.session_state.current_project_files if m["kind"] == kind]
-    with st.expander(f"{label} 업로드·관리 ({len(saved)}개)", expanded=not saved):
+    optional_label = "선택 · " if optional else ""
+    with st.expander(f"{label} 업로드·관리 ({optional_label}{len(saved)}개)", expanded=not saved and not optional):
         st.caption("PDF·PPTX·TXT·MD 지원 · 저장한 자료는 현재 과목과 단원에 연결됩니다.")
         with st.form(f"workspace_upload_{kind}_{scope()}", clear_on_submit=True):
             files = st.file_uploader(label, type=["pdf", "pptx", "txt", "md"],
@@ -136,6 +137,10 @@ def _needs_vision(records):
                "텍스트가 없는 슬라이드" in r["text"] for r in records)
 
 
+def _move_reader_page(key: str, offset: int, total: int):
+    st.session_state[key] = max(1, min(total, int(st.session_state.get(key, 1)) + offset))
+
+
 def render_reader(get_engine, call, evidence, refresh):
     st.subheader("자료 설명")
     st.caption("원본을 보면서 해석·설명을 읽고, 이해되지 않는 부분은 이어서 질문하세요.")
@@ -146,18 +151,26 @@ def render_reader(get_engine, call, evidence, refresh):
         return
     records = scoped_records(st.session_state.page_records, "lecture", meta["name"])
     total = _page_count(meta, records)
-    raw_id = hashlib.sha256(meta["raw"]).hexdigest()[:12]
-    p_col, v_col = st.columns([2, 1])
-    page_text = p_col.text_input("설명할 페이지·슬라이드", value="1",
-                                 help=f"예: 3 또는 3-5, 8 · 전체 {total}페이지 · 최대 6페이지",
-                                 key=f"reader_pages_{scope()}_{raw_id}")
+    raw_id = hashlib.sha256(meta["name"].encode() + meta["raw"]).hexdigest()[:12]
+    cursor = f"reader_page_{scope()}_{raw_id}"
+    if cursor not in st.session_state:
+        st.session_state[cursor] = 1
+    st.session_state[cursor] = max(1, min(total, int(st.session_state[cursor])))
+    prev, counter, nxt = st.columns([1, 2, 1])
+    prev.button("← 이전 페이지", key=f"reader_prev_{scope()}_{raw_id}",
+                disabled=st.session_state[cursor] == 1, width="stretch",
+                on_click=_move_reader_page, args=(cursor, -1, total))
+    page = int(counter.number_input("페이지", min_value=1, max_value=total, step=1, key=cursor))
+    nxt.button("다음 페이지 →", key=f"reader_next_{scope()}_{raw_id}",
+               disabled=page == total, width="stretch",
+               on_click=_move_reader_page, args=(cursor, 1, total))
+    st.caption(f"전체 {total}페이지 · 원본과 해석·설명은 현재 페이지에 맞춰 함께 넘어갑니다.")
+    v_col, a_col = st.columns(2)
     vision = v_col.checkbox("그림·수식도 함께 읽기", value=True,
                            key=f"reader_vision_{scope()}_{raw_id}")
-    try:
-        pages = parse_pages(page_text, total)
-    except ValueError as exc:
-        st.warning(str(exc))
-        return
+    auto = a_col.checkbox("페이지를 넘기면 설명 자동 생성", value=True,
+                          key=f"reader_auto_{scope()}_{raw_id}")
+    pages = [page]
     selected = scoped_records(records, "lecture", pages=pages)
     context = fit_context(selected)
     pdf = _pdf_for(meta)
@@ -168,7 +181,6 @@ def render_reader(get_engine, call, evidence, refresh):
     left, right = st.columns([1, 1], gap="large")
     with left:
         st.markdown("#### 강의자료 원본")
-        page = st.selectbox("미리볼 페이지", pages, key=f"reader_preview_{sid}")
         st.caption(f"{meta['name']} · {page}/{total}페이지 · 파일의 실제 페이지 순서 기준")
         with st.container(height=680):
             if pdf:
@@ -185,14 +197,24 @@ def render_reader(get_engine, call, evidence, refresh):
                            key=f"reader_download_{sid}")
     with right:
         st.markdown("#### 한국어 해석과 설명")
-        st.caption(f"선택 범위: {', '.join(map(str, pages))}페이지 · AI 실행 시 선택 페이지가 전송됩니다.")
+        st.caption(f"현재 {page}페이지의 해석·설명입니다.")
         if vision and pdf:
             st.caption("그림·수식 읽기에는 이미지 입력을 지원하는 모델이 필요합니다.")
         blocked = _needs_vision(selected) and (not vision or not pdf)
-        if st.button("해석·설명 만들기", type="primary", key=f"reader_explain_{sid}", disabled=blocked):
+        existing_note = st.session_state.reader_notes.get(sid)
+        regenerate = st.button("설명 다시 만들기" if existing_note else "이 페이지 설명 만들기",
+                               type="primary", key=f"reader_explain_{sid}", disabled=blocked)
+        attempts = st.session_state.setdefault("reader_auto_attempts", {})
+        configuration = repr((st.session_state.get("provider"), st.session_state.get("user_model"),
+                              st.session_state.get("user_api_key", "")))
+        attempt_id = sid + hashlib.sha256(configuration.encode()).hexdigest()[:12]
+        automatic = (auto and not existing_note and bool(st.session_state.get("user_api_key"))
+                     and attempt_id not in attempts)
+        if (regenerate or automatic) and not blocked:
+            attempts[attempt_id] = True
             engine = get_engine()
             if engine:
-                with st.spinner("선택 페이지를 해석하고 설명하는 중..."):
+                with st.spinner(f"{page}페이지를 해석하고 설명하는 중..."):
                     try:
                         images = _images(pdf, pages, meta["name"], vision)
                         note = call(engine.explain_material, context_to_text(context, max_chars=32000), images)
@@ -210,7 +232,7 @@ def render_reader(get_engine, call, evidence, refresh):
                 st.markdown(note["explanation"])
             evidence(note["context"], note.get("evidence_ids"), title="해석·설명 근거 페이지")
         else:
-            st.info("위 버튼을 누르면 선택한 범위의 해석과 설명을 만듭니다. 페이지가 바뀌면 해당 범위의 설명을 따로 보여줍니다.")
+            st.info("이 페이지의 설명이 아직 없습니다. API 연결을 확인한 뒤 위 버튼으로 만들 수 있습니다.")
         st.markdown("#### 자료에 질문하기")
         messages = st.session_state.reader_chats.get(sid, [])
         with st.container(height=330):
@@ -243,7 +265,7 @@ def render_reader(get_engine, call, evidence, refresh):
                     st.rerun()
                 else:
                     st.info("질문 전송에 실패했습니다. 입력했던 질문: " + prompt)
-        if messages and st.button("이 범위 대화 비우기", key=f"reader_clear_{sid}"):
+        if messages and st.button("이 페이지 대화 비우기", key=f"reader_clear_{sid}"):
             st.session_state.reader_chats.pop(sid, None)
             st.rerun()
 
@@ -377,38 +399,52 @@ def _feedback(index, question, evidence, batch_id):
 
 def render_practice(get_engine, call, evidence, refresh, record_attempt):
     st.subheader("문제 풀이")
-    st.caption("기출을 등록하고 문제 수를 정해 풀어보세요. 채점은 현재 단원의 강의자료를 함께 참고합니다.")
-    material_upload("exam", refresh)
-    meta = _pick_file("exam", "exam")
-    if not meta:
-        st.info("기출문제를 업로드하면 원문 풀이 또는 기출 기반 새 문제를 시작할 수 있습니다.")
+    st.caption("현재 과목·단원의 강의자료만으로도 문제를 만들 수 있습니다. 기출은 선택 사항입니다.")
+    material_upload("exam", refresh, optional=True)
+    has_lecture = any(r["kind"] == "lecture" for r in st.session_state.page_records)
+    has_exam = any(m["kind"] == "exam" for m in st.session_state.source_files.values())
+    if not has_lecture and not has_exam:
+        st.info("'자료 설명' 탭에서 강의자료를 올리면 바로 문제를 만들 수 있습니다. 기출문제는 없어도 됩니다.")
         return
-    records = scoped_records(st.session_state.page_records, "exam", meta["name"])
-    count_pages = _page_count(meta, records)
-    raw_id = hashlib.sha256(meta["raw"]).hexdigest()[:12]
-    mode = st.radio("풀이 방식", ["기출 원문 풀기", "기출 기반 새 문제"], horizontal=True, key=f"workspace_exam_mode_{scope()}")
+    modes = ["강의자료로 문제 만들기"] if has_lecture else []
+    if has_exam:
+        modes.extend(["기출 원문 풀기", "기출 기반 새 문제"] if has_lecture else ["기출 원문 풀기"])
+    mode_key = f"workspace_exam_mode_{scope()}"
+    if st.session_state.get(mode_key) not in modes or (has_lecture and "exam_requested_concept" in st.session_state):
+        st.session_state[mode_key] = modes[0]
+    mode = st.radio("풀이 방식", modes, horizontal=True, key=mode_key)
     original = mode == "기출 원문 풀기"
-    c1, c2 = st.columns([2, 1])
-    page_text = c1.text_input("기출 페이지·슬라이드 범위", value=f"1-{min(6, count_pages)}" if count_pages > 1 else "1",
-                              key=f"workspace_exam_pages_{scope()}_{raw_id}",
-                              help=f"전체 {count_pages}페이지 중 한 번에 최대 6페이지. 예: 2-5")
-    count = int(c2.number_input("문제 수", min_value=1, max_value=10, value=5, step=1,
+    lecture_only = mode == "강의자료로 문제 만들기"
+    selected, pages, pdf, vision = [], [], None, False
+    source_name = "현재 단원 강의자료"
+    if not lecture_only:
+        meta = _pick_file("exam", "exam")
+        records = scoped_records(st.session_state.page_records, "exam", meta["name"])
+        count_pages = _page_count(meta, records)
+        raw_id = hashlib.sha256(meta["name"].encode() + meta["raw"]).hexdigest()[:12]
+        page_text = st.text_input("기출 페이지·슬라이드 범위",
+                                 value=f"1-{min(6, count_pages)}" if count_pages > 1 else "1",
+                                 key=f"workspace_exam_pages_{scope()}_{raw_id}",
+                                 help=f"전체 {count_pages}페이지 중 한 번에 최대 6페이지. 예: 2-5")
+        try:
+            pages = parse_pages(page_text, count_pages)
+        except ValueError as exc:
+            st.warning(str(exc))
+            return
+        selected = scoped_records(records, "exam", pages=pages)
+        pdf, source_name = _pdf_for(meta), meta["name"]
+        vision = st.checkbox("기출의 그림·수식도 함께 읽기", value=True,
+                             key=f"workspace_exam_vision_{scope()}_{raw_id}")
+    else:
+        st.caption("현재 단원에 등록한 강의자료에서 관련 부분을 찾아 출제합니다. 기출 자료는 사용하지 않습니다.")
+    count = int(st.number_input("문제 수", min_value=1, max_value=10, value=5, step=1,
                                 key=f"workspace_exam_count_{scope()}"))
-    try:
-        pages = parse_pages(page_text, count_pages)
-    except ValueError as exc:
-        st.warning(str(exc))
-        return
-    selected = scoped_records(records, "exam", pages=pages)
-    pdf = _pdf_for(meta)
-    vision = st.checkbox("기출의 그림·수식도 함께 읽기", value=True,
-                         key=f"workspace_exam_vision_{scope()}_{raw_id}")
     if original:
         st.caption("기출의 수치·조건을 유지해 문제를 추출합니다. 실제 확인한 문항이 부족하면 문제 수나 범위를 조정하도록 안내합니다.")
         if pdf:
             with st.expander("선택한 기출 원본 보기"):
                 for page in pages:
-                    st.image(render_pdf_page_png(pdf, page), caption=f"{meta['name']} · p.{page}", width="stretch")
+                    st.image(render_pdf_page_png(pdf, page), caption=f"{source_name} · p.{page}", width="stretch")
         desired, difficulty, topic, weak = "원문 유지", "medium", "", []
     else:
         x1, x2 = st.columns(2)
@@ -424,11 +460,10 @@ def render_practice(get_engine, call, evidence, refresh, record_attempt):
         if weak:
             st.caption("현재 단원 취약 개념: " + " · ".join(weak))
     if original and "exam_requested_concept" in st.session_state:
-        st.info("위에서 '기출 기반 새 문제'를 선택하면 방금 틀린 개념이 연습 범위에 입력됩니다.")
-    has_lecture = any(r["kind"] == "lecture" for r in st.session_state.page_records)
+        st.info("강의자료를 등록하면 방금 틀린 개념으로 새 문제를 만들 수 있습니다.")
     blocked = (not original and not has_lecture) or (_needs_vision(selected) and (not pdf or not vision))
     if not has_lecture:
-        st.warning("강의자료를 먼저 등록하면 수업 범위에 맞춘 출제와 근거 제시가 가능합니다. 새 문제 생성에는 강의자료가 필요합니다.")
+        st.warning("강의자료를 등록하면 수업 범위에 맞춘 해설과 근거 제시가 가능합니다.")
     if _needs_vision(selected) and (not pdf or not vision):
         st.warning("텍스트가 없는 기출은 PDF로 올리고 그림·수식 읽기를 켜 주세요.")
     if st.session_state.exam_set:
@@ -440,22 +475,28 @@ def render_practice(get_engine, call, evidence, refresh, record_attempt):
         engine = get_engine()
         if engine:
             query = topic or " ".join(r["text"][:1000] for r in selected)
-            ctx = fit_context(selected + _related_lectures(query, k=10), max_chars=28000)
-            with st.spinner(f"{count}문제를 구성하는 중..."):
-                try:
-                    result = call(engine.generate_exam_set, context_to_text(ctx, max_chars=36000), ctx,
-                                  count, original, desired, difficulty, topic, weak,
-                                  _images(pdf, pages, meta["name"], vision))
-                except Exception as exc:
-                    st.error(f"기출을 읽지 못했습니다: {exc}")
-                    result = None
-            if result:
-                st.session_state.exam_set = {**result, "id": uuid4().hex[:12], "context": ctx,
-                                             "mode": mode, "file_name": meta["name"], "pages": pages}
-                for key in ["exam_drafts", "exam_results", "exam_grade_contexts"]:
-                    st.session_state[key] = {}
-                st.session_state.exam_logged = []
-                st.rerun()
+            if weak:
+                query = " ".join([query, *weak])
+            ctx = fit_context(selected + _related_lectures(query, k=12), max_chars=28000)
+            readable = [r for r in ctx if not _needs_vision([r])]
+            if lecture_only and not readable:
+                st.warning("강의자료에서 문제를 만들 텍스트를 읽지 못했습니다. 텍스트가 포함된 PDF·PPTX로 올려 주세요.")
+            else:
+                with st.spinner(f"{count}문제를 구성하는 중..."):
+                    try:
+                        result = call(engine.generate_exam_set, context_to_text(ctx, max_chars=36000), ctx,
+                                      count, original, desired, difficulty, topic, weak,
+                                      _images(pdf, pages, source_name, vision))
+                    except Exception as exc:
+                        st.error(f"자료를 읽지 못했습니다: {exc}")
+                        result = None
+                if result:
+                    st.session_state.exam_set = {**result, "id": uuid4().hex[:12], "context": ctx,
+                                                 "mode": mode, "file_name": source_name, "pages": pages}
+                    for key in ["exam_drafts", "exam_results", "exam_grade_contexts"]:
+                        st.session_state[key] = {}
+                    st.session_state.exam_logged = []
+                    st.rerun()
     batch = st.session_state.exam_set
     if not batch:
         return
@@ -463,7 +504,8 @@ def render_practice(get_engine, call, evidence, refresh, record_attempt):
     batch_id = batch["id"]
     st.divider()
     st.markdown(f"### 현재 풀이 · {len(questions)}문제")
-    st.caption(f"{batch['mode']} · {batch['file_name']} · {', '.join(map(str, batch['pages']))}페이지"
+    page_label = f" · {', '.join(map(str, batch['pages']))}페이지" if batch['pages'] else ""
+    st.caption(f"{batch['mode']} · {batch['file_name']}{page_label}"
                " · 위에서 바꾼 설정은 새 세트를 시작할 때 적용됩니다.")
     if batch.get("note"):
         st.info(batch["note"])
