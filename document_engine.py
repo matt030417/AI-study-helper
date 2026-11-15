@@ -5,6 +5,10 @@ from io import BytesIO
 from typing import Iterable
 import base64
 import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 
 import fitz  # PyMuPDF
 from PIL import Image, ImageOps
@@ -39,10 +43,10 @@ def extract_uploaded_file(uploaded_file, kind: str) -> list[dict]:
     records: list[dict] = []
 
     if suffix == "pdf":
-        doc = fitz.open(stream=raw, filetype="pdf")
-        for i, page in enumerate(doc, start=1):
-            text = _clean_text(page.get_text("text"))
-            if text:
+        with fitz.open(stream=raw, filetype="pdf") as doc:
+            for i, page in enumerate(doc, start=1):
+                text = _clean_text(page.get_text("text"))
+                text = text or "[이 페이지에는 추출 가능한 텍스트가 없습니다. 원본 이미지 분석이 필요합니다.]"
                 records.append({"text": text, "source": name, "page": i, "kind": kind})
 
     elif suffix == "pptx":
@@ -56,8 +60,8 @@ def extract_uploaded_file(uploaded_file, kind: str) -> list[dict]:
                     for row in shape.table.rows:
                         pieces.append(" | ".join(cell.text for cell in row.cells))
             text = _clean_text("\n".join(pieces))
-            if text:
-                records.append({"text": text, "source": name, "page": i, "kind": kind})
+            records.append({"text": text or "[텍스트가 없는 슬라이드입니다. PDF 원본으로 변환해 그림을 분석해 주세요.]",
+                            "source": name, "page": i, "kind": kind})
 
     elif suffix in {"txt", "md"}:
         text = raw.decode("utf-8", errors="ignore")
@@ -150,15 +154,16 @@ class LocalRetriever:
                 break
         return result
 
-    def representative(self, k: int = 8) -> list[dict]:
-        if not self.chunks:
+    def representative(self, k: int = 8, kind: str | None = None) -> list[dict]:
+        chunks = [c for c in self.chunks if kind is None or c.get("kind") == kind]
+        if not chunks:
             return []
-        if len(self.chunks) <= k:
-            return list(self.chunks)
+        if len(chunks) <= k:
+            return list(chunks)
         # 문서 전체에 걸쳐 골고루 샘플
-        step = (len(self.chunks) - 1) / max(k - 1, 1)
+        step = (len(chunks) - 1) / max(k - 1, 1)
         idxs = sorted({round(i * step) for i in range(k)})
-        return [self.chunks[i] for i in idxs]
+        return [chunks[i] for i in idxs]
 
 
 def context_to_text(items: list[dict], max_chars: int = 12000) -> str:
@@ -225,6 +230,34 @@ def source_location(item: dict) -> str:
     if source.lower().endswith(".pdf"):
         return f"{source} · p.{page}"
     return f"{source} · 위치 {page}"
+
+
+def pptx_to_pdf(raw: bytes) -> bytes:
+    """Optional original-slide preview using LibreOffice installed by packages.txt."""
+    binary = shutil.which("libreoffice") or shutil.which("soffice")
+    if not binary:
+        raise ValueError("PPTX 원본 미리보기에는 LibreOffice가 필요합니다. PDF로 변환해 올리면 바로 볼 수 있습니다.")
+    with tempfile.TemporaryDirectory(prefix="kuac_slides_") as directory:
+        root = Path(directory)
+        (root / "slides.pptx").write_bytes(raw)
+        result = subprocess.run(
+            [binary, "-env:UserInstallation=" + (root / "profile").as_uri(),
+             "--headless", "--convert-to", "pdf", "--outdir", str(root),
+             str(root / "slides.pptx")], capture_output=True, timeout=45, check=False,
+        )
+        target = root / "slides.pdf"
+        if result.returncode or not target.is_file():
+            raise ValueError("PPTX를 미리보기로 변환하지 못했습니다. PDF로 변환해 업로드해 주세요.")
+        return target.read_bytes()
+
+
+def pages_to_images(raw: bytes, pages: list[int], source: str) -> list[dict]:
+    images = []
+    for page in pages:
+        jpeg = _compress_solution_image(render_pdf_page_png(raw, page, zoom=1.4))
+        images.append({"label": f"{source} · p.{page}", "jpeg_bytes": jpeg,
+                       "data_url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")})
+    return images
 
 
 def _compress_solution_image(raw: bytes, max_side: int = 1600, quality: int = 82) -> bytes:

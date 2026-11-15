@@ -9,6 +9,8 @@ import pandas as pd
 import streamlit as st
 
 from ai_engine import AIEngine
+from study_core import new_workspace_state, file_key, cited_items
+from workspace_ui import render_reader, render_practice
 from cloud_storage import (
     create_chapter,
     create_project,
@@ -660,6 +662,7 @@ DEFAULTS = {
     "current_chapter_name": "",
     "loaded_material_chapter_id": "",
 }
+DEFAULTS.update(new_workspace_state())
 for key, value in DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = value
@@ -746,6 +749,10 @@ class MemoryUpload:
 
 
 def reset_learning_screen_state(clear_materials: bool = True):
+    for key, value in new_workspace_state().items():
+        if key != "page_records" or clear_materials:
+            st.session_state[key] = value
+    st.session_state.pop("exam_requested_concept", None)
     st.session_state.question = None
     st.session_state.question_context = []
     st.session_state.oral_eval = None
@@ -824,6 +831,7 @@ def load_current_project_materials(force: bool = False):
 
     if not chapter_id:
         st.session_state.current_project_files = []
+        st.session_state.page_records = []
         st.session_state.chunks = []
         st.session_state.retriever = None
         st.session_state.source_files = {}
@@ -858,7 +866,8 @@ def load_current_project_materials(force: bool = False):
             )
             wrapped = MemoryUpload(meta["file_name"], raw)
             page_records.extend(extract_uploaded_file(wrapped, meta["kind"]))
-            source_files[meta["file_name"]] = {
+            source_files[file_key(meta["kind"], meta["file_name"])] = {
+                "name": meta["file_name"],
                 "raw": raw,
                 "suffix": meta["suffix"],
                 "kind": meta["kind"],
@@ -868,6 +877,7 @@ def load_current_project_materials(force: bool = False):
 
     chunks = chunk_records(page_records)
     st.session_state.current_project_files = files
+    st.session_state.page_records = page_records
     st.session_state.chunks = chunks
     st.session_state.retriever = LocalRetriever(chunks) if chunks else None
     st.session_state.source_files = source_files
@@ -934,6 +944,7 @@ def load_cloud_history():
 
 
 def clear_cloud_session():
+    st.session_state.pop("user_api_key", None)
     st.session_state.cloud_client = None
     st.session_state.cloud_user_id = ""
     st.session_state.cloud_username = ""
@@ -985,11 +996,11 @@ def get_engine():
         )
         return None
 
-    return AIEngine(
-        cfg["api_key"],
-        model=cfg["model"],
-        base_url=cfg["base_url"],
-    )
+    try:
+        return AIEngine(cfg["api_key"], model=cfg["model"], base_url=cfg["base_url"])
+    except Exception:
+        st.error("AI 연결을 준비하지 못했습니다. API Key·모델·서버 연결 설정을 확인해 주세요.")
+        return None
 
 
 def pick_context(query: str, k: int = 7):
@@ -1047,12 +1058,13 @@ def parse_number(text: str):
 
 def show_evidence(items: list[dict], evidence_ids=None, title: str = "근거 자료", max_items: int = 3):
     """Show exact source/page, extracted source text, and PDF page preview when available."""
-    selected = select_evidence(items, evidence_ids, fallback=max_items)[:max_items]
+    direct = cited_items(items, evidence_ids)
+    selected = (direct or items[:max_items])[:max_items]
     if not selected:
         return
 
     with st.expander(title):
-        if evidence_ids:
+        if direct:
             st.caption("AI가 [자료 N] 중 직접 근거로 지정한 부분입니다. 원문은 앱이 업로드 자료에서 직접 추출한 내용입니다.")
         else:
             st.caption("AI에 전달된 관련 자료 중 상위 근거입니다. 원문은 앱이 업로드 자료에서 직접 추출한 내용입니다.")
@@ -1069,10 +1081,10 @@ def show_evidence(items: list[dict], evidence_ids=None, title: str = "근거 자
                 excerpt = (item.get("text") or "").strip()
                 st.write(excerpt[:1200] + ("…" if len(excerpt) > 1200 else ""))
 
-                source_file = st.session_state.get("source_files", {}).get(item.get("source"))
+                source_file = st.session_state.get("source_files", {}).get(file_key(item.get("kind", "lecture"), item.get("source", "")))
                 if source_file and source_file.get("suffix") == "pdf":
                     digest = hashlib.md5(
-                        f"{title}|{item.get('source')}|{item.get('page')}|{i}".encode("utf-8")
+                        f"{title}|{item.get('kind')}|{item.get('source')}|{item.get('page')}|{i}".encode("utf-8")
                     ).hexdigest()[:12]
                     if st.checkbox("실제 PDF 페이지 보기", key=f"pdf_evidence_{digest}"):
                         try:
@@ -1080,7 +1092,7 @@ def show_evidence(items: list[dict], evidence_ids=None, title: str = "근거 자
                             st.image(
                                 png,
                                 caption=f"{item['source']} · p.{item['page']}",
-                                use_container_width=True,
+                                width="stretch",
                             )
                         except Exception as e:
                             st.info(f"페이지 미리보기를 표시하지 못했습니다: {e}")
@@ -1102,14 +1114,14 @@ with st.sidebar:
         """,
         unsafe_allow_html=True,
     )
-    st.caption("강의자료 기반 개념 확인 → 약점 탐지 → 맞춤 문제 → 피드백")
+    st.caption("자료 해석·설명과 채팅 → 기출 풀이 → 취약 개념 복습")
 
     st.markdown("### 학습 기록 계정")
     if cloud_enabled():
         if cloud_logged_in():
             st.success(f"로그인됨 · {st.session_state.cloud_username}")
             st.caption("점수·문제·취약 개념은 이 학습 ID에 저장됩니다.")
-            if st.button("로그아웃", use_container_width=True, key="cloud_logout"):
+            if st.button("로그아웃", width="stretch", key="cloud_logout"):
                 try:
                     sign_out(st.session_state.cloud_client)
                 except Exception:
@@ -1139,7 +1151,7 @@ with st.sidebar:
             )
 
             if auth_mode == "로그인":
-                if st.button("로그인", use_container_width=True, key="cloud_login"):
+                if st.button("로그인", width="stretch", key="cloud_login"):
                     if not account_username.strip() or not account_password:
                         st.warning("학습 ID와 비밀번호를 입력해 주세요.")
                     else:
@@ -1167,7 +1179,7 @@ with st.sidebar:
                             st.caption(f"상세 오류: {e}")
             else:
                 st.caption("별도 사이트 가입 없이 이 앱 안에서 바로 학습 계정을 만듭니다.")
-                if st.button("학습 계정 만들기", use_container_width=True, key="cloud_signup"):
+                if st.button("학습 계정 만들기", width="stretch", key="cloud_signup"):
                     if not account_username.strip() or len(account_password) < 6:
                         st.warning("학습 ID와 6자 이상의 비밀번호를 입력해 주세요.")
                     else:
@@ -1215,9 +1227,9 @@ with st.sidebar:
                     f"현재 단원 · **{st.session_state.current_chapter_name}**"
                 )
         elif st.session_state.get("projects"):
-            st.caption("프로젝트 설정 탭에서 학습할 과목을 선택해 주세요.")
+            st.caption("과목·단원 관리에서 학습할 과목을 선택해 주세요.")
         else:
-            st.caption("프로젝트 설정 탭에서 첫 과목을 만들어 주세요.")
+            st.caption("과목·단원 관리에서 첫 과목을 만들어 주세요.")
 
         st.divider()
         st.markdown("### AI 연결")
@@ -1298,12 +1310,12 @@ if not cloud_logged_in():
                     <strong>KUAC</strong> · Korea University AI Creators
                 </div>
                 <div class="kuac-hero-desc">
-                    강의자료와 기출문제를 기반으로 개념을 확인하고, 취약점을 찾아,
+                    강의자료와 기출문제를 기반으로 자료를 이해하고, 기출문제를 풀고,
                     나에게 필요한 맞춤 문제와 상세한 피드백까지 이어지는 AI 학습 파트너입니다.
                 </div>
                 <div class="kuac-chips">
                     <div class="kuac-chip"><b>▣</b> 강의 자료 기반 학습</div>
-                    <div class="kuac-chip"><b>●</b> 개념 확인</div>
+                    <div class="kuac-chip"><b>●</b> 해석·설명과 채팅</div>
                     <div class="kuac-chip"><b>✎</b> 맞춤 문제 생성</div>
                     <div class="kuac-chip"><b>▥</b> 학습 현황 분석</div>
                 </div>
@@ -1328,13 +1340,13 @@ if not cloud_logged_in():
             </div>
             <div class="kuac-feature-card blue">
                 <div class="kuac-feature-icon">?</div>
-                <h4>개념 확인</h4>
-                <p>AI 질문에 직접 답하면서 단순 암기가 아니라 실제 이해도를 확인합니다.</p>
+                <h4>자료 설명</h4>
+                <p>원본 옆에서 한국어 해석과 설명을 읽고 AI 채팅으로 질문합니다.</p>
             </div>
             <div class="kuac-feature-card green">
                 <div class="kuac-feature-icon">✎</div>
-                <h4>맞춤 문제</h4>
-                <p>확인된 취약 개념을 바탕으로 개념형·계산형 문제와 피드백을 제공합니다.</p>
+                <h4>문제 풀이</h4>
+                <p>기출을 바탕으로 문제 수를 정해 풀고 채점과 오답 피드백을 받습니다.</p>
             </div>
             <div class="kuac-feature-card purple">
                 <div class="kuac-feature-icon">▥</div>
@@ -1403,19 +1415,11 @@ if cloud_logged_in() and st.session_state.get("current_project_id"):
     else:
         st.info(
             "현재 프로젝트에 학습 단원이 없습니다. "
-            "'자료 등록' 탭에서 첫 단원을 만들어 주세요."
+            "'과목·단원 관리'를 열어 첫 단원을 만들어 주세요."
         )
 
 
-tab_projects, tab_upload, tab_oral, tab_practice, tab_dashboard = st.tabs(
-    ["프로젝트 설정", "자료 등록", "개념 확인", "맞춤 문제", "학습 현황"]
-)
-
-
-# -------------------------
-# 0. Projects
-# -------------------------
-with tab_projects:
+if st.toggle("과목·단원 관리", value=not bool(st.session_state.get("current_chapter_id")), key="workspace_management"):
     st.subheader("내 학습 프로젝트")
     st.caption("과목별로 자료와 학습 기록을 분리해 관리하고, 아래 카드에서 학습할 프로젝트를 선택합니다.")
 
@@ -1429,7 +1433,7 @@ with tab_projects:
             create_clicked = st.form_submit_button(
                 "새 프로젝트 만들기",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
         if create_clicked:
             try:
@@ -1520,7 +1524,7 @@ with tab_projects:
                                         "선택",
                                         key=f"open_project_{project['id']}",
                                         help=f"{project['name']} 프로젝트 선택",
-                                        use_container_width=True,
+                                        width="stretch",
                                     ):
                                         set_current_project(project["id"])
                                         with st.spinner("프로젝트 자료를 불러오는 중..."):
@@ -1558,11 +1562,11 @@ with tab_projects:
             current = next((p for p in st.session_state.projects if p["id"] == st.session_state.current_project_id), None)
             if current:
                 with st.expander("현재 프로젝트 이름/설명 수정 또는 삭제"):
-                    edit_name = st.text_input("프로젝트 이름", value=current["name"], key="edit_project_name")
-                    edit_desc = st.text_input("설명", value=current.get("description", ""), key="edit_project_desc")
+                    edit_name = st.text_input("프로젝트 이름", value=current["name"], key=f"edit_project_name_{current['id']}")
+                    edit_desc = st.text_input("설명", value=current.get("description", ""), key=f"edit_project_desc_{current['id']}")
                     c1, c2 = st.columns(2)
                     with c1:
-                        if st.button("프로젝트 정보 저장", use_container_width=True):
+                        if st.button("프로젝트 정보 저장", width="stretch"):
                             try:
                                 rename_project(
                                     st.session_state.cloud_client,
@@ -1581,8 +1585,8 @@ with tab_projects:
                             except Exception as e:
                                 st.error(f"수정 실패: {e}")
                     with c2:
-                        delete_confirm = st.checkbox("프로젝트 삭제에 동의", key="project_delete_confirm")
-                        if st.button("프로젝트 삭제", disabled=not delete_confirm, use_container_width=True):
+                        delete_confirm = st.checkbox("프로젝트 삭제에 동의", key=f"project_delete_confirm_{current['id']}")
+                        if st.button("프로젝트 삭제", disabled=not delete_confirm, width="stretch"):
                             try:
                                 delete_project(
                                     st.session_state.cloud_client,
@@ -1603,16 +1607,6 @@ with tab_projects:
                                 st.error(f"프로젝트 삭제 실패: {e}")
 
 
-# -------------------------
-# 1. Upload
-# -------------------------
-with tab_upload:
-    st.subheader("강의자료 / 기출문제 등록")
-
-    if cloud_logged_in() and not st.session_state.get("current_project_id"):
-        st.warning("먼저 '프로젝트 설정' 탭에서 과목/프로젝트를 만들어 주세요.")
-        st.stop()
-
     if cloud_logged_in() and st.session_state.get("current_project_id"):
         st.markdown("### 학습 단원 관리")
         st.caption(
@@ -1630,7 +1624,7 @@ with tab_upload:
                 make_chapter = st.form_submit_button(
                     "단원 만들기",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                 )
             if make_chapter:
                 try:
@@ -1663,7 +1657,7 @@ with tab_upload:
                     "삭제",
                     key="delete_chapter_button",
                     disabled=not confirm_delete_chapter,
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     try:
                         delete_chapter(
@@ -1681,669 +1675,101 @@ with tab_upload:
                     except Exception as e:
                         st.error(f"학습 단원 삭제 실패: {e}")
 
-    if not st.session_state.get("current_chapter_id"):
-        st.warning("자료를 등록하려면 먼저 학습 단원을 만들어 주세요.")
-        st.stop()
-    if st.session_state.get("current_project_name"):
-        st.info(
-            f"현재 프로젝트: **{st.session_state.current_project_name}** · "
-            f"현재 단원: **{st.session_state.current_chapter_name}** · "
-            "이 단원의 자료만 질문과 맞춤 문제에 사용됩니다."
-        )
-    st.caption("PDF, PPTX, TXT, MD를 지원합니다. 로그인 상태에서는 업로드한 자료가 현재 프로젝트에 저장되어 다음 접속에서도 다시 불러와집니다.")
-
-    if cloud_logged_in() and st.session_state.get("current_project_id"):
-        saved_files = st.session_state.get("current_project_files", [])
-        if saved_files:
-            with st.expander(f"프로젝트에 저장된 자료 ({len(saved_files)}개)"):
-                for meta in saved_files:
-                    kind_label = "강의자료" if meta["kind"] == "lecture" else "기출문제"
-                    mb = meta.get("size_bytes", 0) / (1024 * 1024)
-                    c_name, c_del = st.columns([5, 1])
-                    with c_name:
-                        st.write(f"{kind_label} · **{meta['file_name']}** · {mb:.1f} MB")
-                    with c_del:
-                        if st.button("삭제", key=f"delete_file_{meta['id']}"):
-                            try:
-                                delete_project_file(
-                                    st.session_state.cloud_client,
-                                    st.session_state.cloud_user_id,
-                                    meta["id"],
-                                )
-                                load_current_project_materials(force=True)
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"파일 삭제 실패: {e}")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        lecture_files = st.file_uploader(
-            "강의자료",
-            type=["pdf", "pptx", "txt", "md"],
-            accept_multiple_files=True,
-            key="lecture_upload",
-        )
-    with col2:
-        exam_files = st.file_uploader(
-            "기출문제",
-            type=["pdf", "pptx", "txt", "md"],
-            accept_multiple_files=True,
-            key="exam_upload",
-        )
-
-    if st.button("자료 분석하기", type="primary", use_container_width=True):
-        if not lecture_files and not exam_files:
-            st.warning("강의자료 또는 기출문제를 하나 이상 업로드해 주세요.")
-        else:
-            page_records = []
-            failed = []
-            source_files = {}
-            with st.spinner("자료에서 텍스트를 추출하고 검색 인덱스를 만드는 중..."):
-                for f in lecture_files or []:
-                    try:
-                        raw = f.getvalue()
-                        source_files[f.name] = {
-                            "raw": raw,
-                            "suffix": f.name.lower().rsplit(".", 1)[-1],
-                            "kind": "lecture",
-                        }
-                        page_records.extend(extract_uploaded_file(f, "lecture"))
-                    except Exception as e:
-                        failed.append(f"{f.name}: {e}")
-                for f in exam_files or []:
-                    try:
-                        raw = f.getvalue()
-                        source_files[f.name] = {
-                            "raw": raw,
-                            "suffix": f.name.lower().rsplit(".", 1)[-1],
-                            "kind": "exam",
-                        }
-                        page_records.extend(extract_uploaded_file(f, "exam"))
-                    except Exception as e:
-                        failed.append(f"{f.name}: {e}")
-
-                chunks = chunk_records(page_records)
-                if chunks:
-                    st.session_state.chunks = chunks
-                    st.session_state.retriever = LocalRetriever(chunks)
-                    st.session_state.source_files = source_files
-
-                    if cloud_logged_in() and st.session_state.get("current_project_id"):
-                        try:
-                            for f in lecture_files or []:
-                                save_project_file(
-                                    st.session_state.cloud_client,
-                                    st.session_state.cloud_user_id,
-                                    st.session_state.current_project_id,
-                                    st.session_state.current_chapter_id,
-                                    f.name,
-                                    "lecture",
-                                    f.getvalue(),
-                                )
-                            for f in exam_files or []:
-                                save_project_file(
-                                    st.session_state.cloud_client,
-                                    st.session_state.cloud_user_id,
-                                    st.session_state.current_project_id,
-                                    st.session_state.current_chapter_id,
-                                    f.name,
-                                    "exam",
-                                    f.getvalue(),
-                                )
-                            # 기존 저장 자료 + 방금 업로드한 자료를 모두 다시 불러와
-                            # 현재 프로젝트의 검색 인덱스를 완전하게 재구성한다.
-                            st.session_state.loaded_material_project_id = ""
-                            load_current_project_materials(force=True)
-                        except Exception as e:
-                            st.warning(f"자료 분석은 완료됐지만 프로젝트 파일 저장 중 오류가 발생했습니다: {e}")
-
-                    st.session_state.question = None
-                    st.session_state.oral_eval = None
-                    st.session_state.oral_eval_context = []
-                    st.session_state.practice = None
-                    st.session_state.practice_eval = None
-                    # 현재 단원의 취약 개념만 다시 연결한다.
-                    st.session_state.weak_queue = rebuild_weak_queue(
-                        current_chapter_attempts()
-                    )
-                    st.success(f"완료: {len(page_records)}개 페이지/슬라이드 → {len(chunks)}개 학습 chunk")
-                else:
-                    st.error("추출된 텍스트가 없습니다. 스캔 PDF라면 텍스트 PDF로 변환해 주세요.")
-
-            for msg in failed:
-                st.error(msg)
-
-    if st.session_state.chunks:
-        with st.expander("인식된 자료 미리보기"):
-            for c in st.session_state.chunks[:5]:
-                st.markdown(f"**{c['source']} · {c['page']}p/slide · {c['kind']}**")
-                st.text(c["text"][:700] + ("…" if len(c["text"]) > 700 else ""))
 
 
-# -------------------------
-# 2. Oral exam
-# -------------------------
-with tab_oral:
-    st.subheader("개념 확인")
-
-    if st.session_state.get("current_chapter_name"):
-        st.caption(
-            f"현재 단원: **{st.session_state.current_chapter_name}** · "
-            "이 단원의 자료와 취약 개념만 반영합니다."
-        )
-
-    if not st.session_state.chunks:
-        st.info("먼저 '자료 등록' 탭에서 자료를 등록해 주세요.")
-    else:
-        c1, c2, c3 = st.columns([2, 1, 1])
-        with c1:
-            topic = st.text_input(
-                "학습 범위 또는 주제",
-                placeholder="예: Deal-Grove model, CVD, NMR T1/T2 (비우면 자료 전체)",
-            )
-        with c2:
-            mode = st.selectbox("시험 모드", ["혼합", "개념 중심", "계산 중심"])
-        with c3:
-            difficulty = st.selectbox("난이도", ["easy", "medium", "hard"], index=1)
-
-        use_chapter_weakness = st.checkbox(
-            "현재 단원의 취약 개념을 다음 질문에 반영",
-            value=True,
-            key="use_chapter_weakness",
-        )
-        weak_hint = (
-            st.session_state.weak_queue[0]
-            if use_chapter_weakness and st.session_state.weak_queue
-            else ""
-        )
-
-        if weak_hint:
-            st.info(f"현재 단원의 취약 개념을 반영합니다: **{weak_hint}**")
-
-        if st.button("새 구술 질문 만들기", type="primary"):
-            engine = get_engine()
-            if engine:
-                query = " ".join(x for x in [topic, weak_hint, mode] if x)
-                ctx_items = pick_context(query, k=8)
-                ctx = context_to_text(ctx_items)
-                with st.spinner("강의자료와 기출 스타일을 바탕으로 질문을 만드는 중..."):
-                    q = safe_api_call(
-                        engine.generate_oral_question,
-                        ctx,
-                        topic,
-                        mode,
-                        difficulty,
-                        weak_hint,
-                    )
-                if q:
-                    st.session_state.question = q
-                    st.session_state.question_context = ctx_items
-                    st.session_state.oral_eval = None
-                    st.session_state.oral_eval_context = []
-                    # 새 질문에서는 이전 질문의 답변을 자동으로 비운다.
-                    st.session_state.pop("oral_answer", None)
-
-        q = st.session_state.question
-        if q:
-            st.markdown("### 교수 질문")
-            question_key = hashlib.md5(q["question"].encode("utf-8")).hexdigest()[:10]
-            with st.container(
-                border=True,
-                key=f"formatted_question_oral_{question_key}",
-            ):
-                st.markdown(
-                    '<div class="study-question-label">CONCEPT CHECK</div>',
-                    unsafe_allow_html=True,
-                )
-                render_study_text(q["question"])
-            st.caption(
-                f"유형: {q['question_type']} · 난이도: {q['difficulty']} · "
-                f"확인 개념: {', '.join(q['target_concepts'])}"
-            )
-            show_evidence(
-                st.session_state.question_context,
-                q.get("evidence_ids"),
-                title="📚 질문 출제 근거 보기",
-            )
-
-            oral_answer = st.text_area(
-                "내 답변",
-                height=180,
-                placeholder="교수님 앞에서 말하듯 핵심 개념과 이유를 설명해 보세요.",
-                key="oral_answer",
-            )
-
-            if st.button("답변 제출 및 평가", key="grade_oral"):
-                if not oral_answer.strip():
-                    st.warning("답변을 입력해 주세요.")
-                else:
-                    engine = get_engine()
-                    if engine:
-                        # 채점 시 질문 자체로 관련 문맥을 다시 검색
-                        eval_items = pick_context(q["question"] + " " + oral_answer, k=8)
-                        eval_ctx = context_to_text(eval_items)
-                        with st.spinner("답변의 강점과 취약 개념을 분석하는 중..."):
-                            ev = safe_api_call(
-                                engine.evaluate_oral_answer,
-                                q["question"],
-                                oral_answer,
-                                eval_ctx,
-                            )
-                        if ev:
-                            st.session_state.oral_eval = ev
-                            st.session_state.oral_eval_context = eval_items
-                            for wc in ev["weak_concepts"]:
-                                if wc not in st.session_state.weak_queue:
-                                    st.session_state.weak_queue.append(wc)
-                            record_attempt({
-                                "created_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "stage": "oral",
-                                "concept": ", ".join(q["target_concepts"]),
-                                "score": ev["score"],
-                                "verdict": ev["verdict"],
-                                "error_type": ev["error_type"],
-                                "question": q["question"],
-                                "student_answer": oral_answer,
-                                "submitted_work_file": False,
-                                "feedback": ev["feedback"],
-                                "weak_concepts": ev["weak_concepts"],
-                            })
-
-        ev = st.session_state.oral_eval
-        if ev:
-            icon, label = verdict_badge(ev["verdict"])
-            st.markdown(f"### {icon} 평가: {label} · **{ev['score']}점**")
-
-            left, right = st.columns(2)
-            with left:
-                st.markdown("**잘한 부분**")
-                if ev["strengths"]:
-                    for x in ev["strengths"]:
-                        st.write(f"✓ {x}")
-                else:
-                    st.write("—")
-            with right:
-                st.markdown("**보완할 부분**")
-                if ev["missing_points"]:
-                    for x in ev["missing_points"]:
-                        st.write(f"• {x}")
-                else:
-                    st.write("—")
-
-            st.markdown("**피드백**")
-            st.write(ev["feedback"])
-
-            show_evidence(
-                st.session_state.get("oral_eval_context", []),
-                ev.get("evidence_ids"),
-                title="🔎 채점·피드백 근거 보기",
-            )
-
-            if ev["weak_concepts"]:
-                st.warning("취약 개념: " + ", ".join(ev["weak_concepts"]))
-
-            with st.expander("모범 답안 확인"):
-                render_study_text(ev["ideal_answer"])
-
-            st.caption("확인된 취약 개념은 자동으로 '맞춤 문제' 탭에 연결됩니다.")
-
-
-# -------------------------
-# 3. Practice
-# -------------------------
+tab_reader, tab_practice = st.tabs(["자료 설명", "문제 풀이"])
+with tab_reader:
+    render_reader(get_engine, safe_api_call, show_evidence, load_current_project_materials)
 with tab_practice:
-    st.subheader("취약 개념 맞춤 문제")
+    render_practice(get_engine, safe_api_call, show_evidence, load_current_project_materials, record_attempt)
 
-    if st.session_state.get("current_chapter_name"):
-        st.caption(
-            f"현재 단원: **{st.session_state.current_chapter_name}** · "
-            "다른 단원의 취약 개념은 자동으로 가져오지 않습니다."
-        )
-
-    if not st.session_state.chunks:
-        st.info("먼저 자료를 등록해 주세요.")
-    else:
-        known_weak = list(dict.fromkeys(st.session_state.weak_queue))
-        default_concept = known_weak[0] if known_weak else ""
-
-        p1, p2, p3 = st.columns([2, 1, 1])
-        with p1:
-            weak_concept = st.text_input(
-                "연습할 개념",
-                value=default_concept,
-                placeholder="개념 확인에서 찾은 취약 개념 또는 직접 입력",
-            )
-        with p2:
-            desired_type = st.selectbox("문제 유형", ["자동", "개념 문제", "계산 문제"])
-        with p3:
-            p_difficulty = st.selectbox(
-                "연습 난이도", ["easy", "medium", "hard"], index=1, key="p_diff"
-            )
-
-        if known_weak:
-            st.caption("현재 단원의 취약 개념: " + " · ".join(known_weak[:8]))
-
-        if st.button("맞춤 문제 생성", type="primary", key="make_practice"):
-            if not weak_concept.strip():
-                st.warning("연습할 개념을 입력해 주세요.")
-            else:
-                engine = get_engine()
-                if engine:
-                    ctx_items = pick_context(weak_concept, k=9)
-                    ctx = context_to_text(ctx_items)
-                    with st.spinner("취약 개념과 기출 스타일을 반영해 문제를 생성하는 중..."):
-                        problem = safe_api_call(
-                            engine.generate_practice_problem,
-                            ctx,
-                            weak_concept,
-                            desired_type,
-                            p_difficulty,
-                        )
-                    if problem:
-                        st.session_state.practice = problem
-                        st.session_state.practice_context = ctx_items
-                        st.session_state.practice_eval = None
-                        # 새 문제에서는 이전 문제의 최종 답과 타이핑 풀이를 자동으로 비운다.
-                        st.session_state.pop("practice_final", None)
-                        st.session_state.pop("practice_work", None)
-
-        problem = st.session_state.practice
-        if problem:
-            st.markdown("### 연습 문제")
-            problem_key = hashlib.md5(problem["problem"].encode("utf-8")).hexdigest()[:10]
-            with st.container(
-                border=True,
-                key=f"formatted_question_practice_{problem_key}",
-            ):
-                st.markdown(
-                    '<div class="study-question-label">PRACTICE PROBLEM</div>',
-                    unsafe_allow_html=True,
-                )
-                render_study_text(problem["problem"])
-            st.caption(
-                f"개념: {problem['concept']} · 유형: {problem['problem_type']} · "
-                f"난이도: {problem['difficulty']} · 답 형식: {problem['answer_format']}"
-            )
-            show_evidence(
-                st.session_state.practice_context,
-                problem.get("evidence_ids"),
-                title="📚 맞춤 문제 출제 근거 보기",
-            )
-
-            student_final = st.text_input(
-                "최종 답",
-                placeholder="계산 문제라면 최종 수치와 단위를, 개념 문제라면 핵심 답을 입력",
-                key="practice_final",
-            )
-            student_work = st.text_area(
-                "풀이 과정 / 설명 (선택)",
-                height=130,
-                placeholder="타이핑이 편한 부분만 적어도 됩니다. 손글씨 풀이는 아래에서 PDF/사진으로 제출할 수 있습니다.",
-                key="practice_work",
-            )
-
-            solution_file = st.file_uploader(
-                "손글씨 풀이 PDF / 사진 제출 (선택)",
-                type=["pdf", "jpg", "jpeg", "png"],
-                accept_multiple_files=False,
-                key=f"practice_solution_{problem_key}",
-                help="PDF는 앞 3페이지만 AI가 읽습니다. JPG/PNG 사진도 지원합니다.",
-            )
-
-            solution_images = []
-            if solution_file is not None:
-                try:
-                    solution_images = solution_file_to_images(solution_file, max_pages=3)
-                    st.success(
-                        f"풀이 파일 인식 완료 · {len(solution_images)}페이지/이미지"
-                        + (" (PDF는 최대 3페이지)" if solution_file.name.lower().endswith(".pdf") else "")
-                    )
-                    st.caption(
-                        "채점 시 이 이미지가 AI 모델에 전송되어 수식·손글씨·계산 과정을 함께 평가합니다. "
-                        "이미지 분석을 사용하면 텍스트만 채점할 때보다 API 크레딧이 조금 더 들 수 있습니다."
-                    )
-                    with st.expander("제출한 풀이 미리보기"):
-                        for img in solution_images:
-                            st.image(
-                                img["jpeg_bytes"],
-                                caption=img["label"],
-                                use_container_width=True,
-                            )
-                except Exception as e:
-                    st.error(f"풀이 파일을 읽지 못했습니다: {e}")
-                    solution_images = []
-
-            if st.button("채점하기", key="grade_practice"):
-                if not student_final.strip():
-                    st.warning("최종 답을 입력해 주세요.")
-                else:
-                    engine = get_engine()
-                    if engine:
-                        ctx = context_to_text(st.session_state.practice_context)
-
-                        if problem["grading_mode"] == "numeric" and problem["numeric_answer"] is not None:
-                            parsed = parse_number(student_final)
-                            if parsed is None:
-                                st.warning("최종 답에서 숫자를 인식하지 못했습니다. 예: 16.4 kPa")
-                                pe = None
-                            else:
-                                correct = float(problem["numeric_answer"])
-                                tol = problem["numeric_tolerance"]
-                                if tol is None:
-                                    tol = max(abs(correct) * 0.01, 1e-9)
-                                tol = float(tol)
-                                is_correct = abs(parsed - correct) <= tol
-
-                                # 풀이 이미지/텍스트가 있으면 정답 여부와 별개로 AI가 과정을 평가한다.
-                                if solution_images or student_work.strip():
-                                    numeric_check = {
-                                        "is_correct": is_correct,
-                                        "parsed": parsed,
-                                        "correct": correct,
-                                        "tolerance": tol,
-                                        "unit": problem.get("expected_unit"),
-                                    }
-                                    with st.spinner("최종 답과 제출한 풀이 과정을 함께 읽어 채점하는 중..."):
-                                        pe = safe_api_call(
-                                            engine.evaluate_practice_answer,
-                                            problem,
-                                            student_final,
-                                            student_work,
-                                            ctx,
-                                            solution_images,
-                                            numeric_check,
-                                        )
-                                elif is_correct:
-                                    pe = {
-                                        "is_correct": True,
-                                        "score": 100,
-                                        "error_type": "none",
-                                        "reason": f"수치가 허용 오차 ±{tol:g} 범위 안에 있습니다.",
-                                        "feedback": "정답입니다. 풀이 PDF/사진을 함께 제출하면 계산 과정까지 평가받을 수 있습니다.",
-                                        "weak_concepts": [],
-                                        "work_readability": "not_provided",
-                                        "work_assessment": "풀이 과정이 제출되지 않아 최종 수치만 판정했습니다.",
-                                    }
-                                else:
-                                    with st.spinner("정답 판정 완료. 틀린 이유를 분석하는 중..."):
-                                        nf = safe_api_call(
-                                            engine.explain_numeric_error,
-                                            problem,
-                                            student_final,
-                                            student_work,
-                                            ctx,
-                                        )
-                                    if nf is None:
-                                        pe = None
-                                    else:
-                                        pe = {
-                                            "is_correct": False,
-                                            "score": 0,
-                                            "error_type": nf["error_type"],
-                                            "reason": nf["reason"],
-                                            "feedback": nf["feedback"],
-                                            "weak_concepts": nf["weak_concepts"],
-                                            "work_readability": "not_provided" if not student_work.strip() else "clear",
-                                            "work_assessment": "이미지 풀이가 제출되지 않아 입력된 텍스트 풀이만 참고했습니다.",
-                                        }
-                        else:
-                            with st.spinner("답안과 제출한 풀이 과정을 강의자료 기준으로 채점하는 중..."):
-                                pe = safe_api_call(
-                                    engine.evaluate_practice_answer,
-                                    problem,
-                                    student_final,
-                                    student_work,
-                                    ctx,
-                                    solution_images,
-                                    None,
-                                )
-
-                        if pe:
-                            st.session_state.practice_eval = pe
-                            for wc in pe["weak_concepts"]:
-                                if wc not in st.session_state.weak_queue:
-                                    st.session_state.weak_queue.append(wc)
-
-                            record_attempt({
-                                "created_at": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "stage": "practice",
-                                "concept": problem["concept"],
-                                "score": pe["score"],
-                                "verdict": "correct" if pe["is_correct"] else "incorrect",
-                                "error_type": pe["error_type"],
-                                "question": problem["problem"],
-                                "student_answer": student_final,
-                                "submitted_work_file": bool(solution_images),
-                                "feedback": pe["feedback"],
-                                "weak_concepts": pe["weak_concepts"],
-                            })
-
-        pe = st.session_state.practice_eval
-        if pe:
-            if pe["is_correct"] and pe["score"] >= 95:
-                st.success(f"✅ 정답입니다 · {pe['score']}점")
-            elif pe["is_correct"]:
-                st.success(f"✅ 최종 답은 정답 · 풀이 평가 {pe['score']}점")
-            else:
-                st.error(f"❌ 최종 답은 오답 · 풀이 포함 {pe['score']}점")
-
-            st.markdown("**판정 이유**")
-            st.write(pe["reason"])
-
-            if pe.get("work_assessment"):
-                st.markdown("**풀이 과정 평가**")
-                readability = pe.get("work_readability", "not_provided")
-                readability_label = {
-                    "clear": "명확하게 인식됨",
-                    "partial": "일부만 인식됨",
-                    "unreadable": "읽기 어려움",
-                    "not_provided": "제출되지 않음",
-                }.get(readability, readability)
-                st.caption(f"풀이 인식 상태: {readability_label}")
-                st.write(pe["work_assessment"])
-
-            st.markdown("**피드백**")
-            st.write(pe["feedback"])
-
-            if pe["weak_concepts"]:
-                st.warning("추가로 확인할 개념: " + ", ".join(pe["weak_concepts"]))
-
-            with st.expander("정답 및 기준 풀이"):
-                st.markdown("**기준 답안**")
-                render_study_text(problem["reference_answer"])
-                st.markdown("**풀이**")
-                render_study_text(problem["solution"])
-
-
-# -------------------------
-# 4. Dashboard
-# -------------------------
-with tab_dashboard:
-    st.subheader("학습 현황")
-    if cloud_logged_in():
-        st.caption(
-            f"☁️ 학습 ID {st.session_state.cloud_username}의 기록입니다. "
-            "다른 기기에서 같은 계정으로 로그인해도 다시 불러옵니다."
-        )
-    else:
-        st.caption(
-            "현재 로그인하지 않아 이 기록은 브라우저 세션에만 유지됩니다. "
-            "로그인하면 이후 학습 기록을 영구 저장할 수 있습니다."
-        )
-
-    if st.session_state.get("current_project_name"):
-        chapter_label = st.session_state.get("current_chapter_name") or "단원 미선택"
-        st.info(
-            f"현재 프로젝트 **{st.session_state.current_project_name}** · "
-            f"학습 단원 **{chapter_label}**의 학습 현황입니다."
-        )
-
-    attempts = current_chapter_attempts() if st.session_state.get("current_chapter_id") else []
-
-    if not attempts:
-        st.info("아직 채점 기록이 없습니다. 개념 확인이나 맞춤 문제를 진행하면 여기에 누적됩니다.")
-    else:
-        df = pd.DataFrame(attempts)
-        # 최신 기록이 위로 오도록 표시
-        display_df = df.iloc[::-1].reset_index(drop=True)
-
-        c1, c2, c3 = st.columns(3)
-        c1.metric("총 응답", len(df))
-        c2.metric("평균 점수", f"{df['score'].mean():.1f}")
-        c3.metric("최근 점수", int(df.iloc[-1]["score"]))
-
-        st.markdown("### 오류 유형")
-        error_counts = (
-            df[df["error_type"] != "none"]["error_type"]
-            .value_counts()
-            .rename_axis("오류 유형")
-            .reset_index(name="횟수")
-        )
-        if not error_counts.empty:
-            st.bar_chart(error_counts.set_index("오류 유형"))
-        else:
-            st.success("기록된 오류가 없습니다.")
-
-        from collections import Counter
-        weak_counter = Counter()
-        for items in df["weak_concepts"]:
-            if isinstance(items, list):
-                weak_counter.update([x for x in items if x])
-
-        if weak_counter:
-            st.markdown("### 반복적으로 나타난 취약 개념")
-            weak_df = pd.DataFrame(
-                weak_counter.most_common(10), columns=["개념", "언급 횟수"]
-            ).set_index("개념")
-            st.bar_chart(weak_df)
-
-        st.markdown("### 최근 학습 기록")
-        show_cols = [
-            "created_at",
-            "stage",
-            "concept",
-            "score",
-            "verdict",
-            "error_type",
-            "question",
-        ]
-        st.dataframe(
-            display_df[show_cols].head(30),
-            use_container_width=True,
-            hide_index=True,
-        )
-
+with tab_practice:
+    with st.expander("학습 기록과 취약 개념"):
+        st.subheader("학습 현황")
         if cloud_logged_in():
             st.caption(
-                "단원별 기록은 해당 학습 단원에 연결되어 저장됩니다."
+                f"☁️ 학습 ID {st.session_state.cloud_username}의 기록입니다. "
+                "다른 기기에서 같은 계정으로 로그인해도 다시 불러옵니다."
             )
         else:
-            if st.button("현재 세션 학습 기록 초기화"):
-                st.session_state.attempts = []
-                st.session_state.weak_queue = []
-                st.session_state.ai_call_count = 0
-                st.success("현재 브라우저 세션의 학습 기록을 초기화했습니다.")
-                st.rerun()
+            st.caption(
+                "현재 로그인하지 않아 이 기록은 브라우저 세션에만 유지됩니다. "
+                "로그인하면 이후 학습 기록을 영구 저장할 수 있습니다."
+            )
+
+        if st.session_state.get("current_project_name"):
+            chapter_label = st.session_state.get("current_chapter_name") or "단원 미선택"
+            st.info(
+                f"현재 프로젝트 **{st.session_state.current_project_name}** · "
+                f"학습 단원 **{chapter_label}**의 학습 현황입니다."
+            )
+
+        attempts = current_chapter_attempts() if st.session_state.get("current_chapter_id") else []
+
+        if not attempts:
+            st.info("아직 채점 기록이 없습니다. 문제 풀이에서 답안을 채점하면 여기에 누적됩니다.")
+        else:
+            df = pd.DataFrame(attempts)
+            # 최신 기록이 위로 오도록 표시
+            display_df = df.iloc[::-1].reset_index(drop=True)
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("총 응답", len(df))
+            c2.metric("평균 점수", f"{df['score'].mean():.1f}")
+            c3.metric("최근 점수", int(df.iloc[-1]["score"]))
+
+            st.markdown("### 오류 유형")
+            error_counts = (
+                df[df["error_type"] != "none"]["error_type"]
+                .value_counts()
+                .rename_axis("오류 유형")
+                .reset_index(name="횟수")
+            )
+            if not error_counts.empty:
+                st.bar_chart(error_counts.set_index("오류 유형"))
+            else:
+                st.success("기록된 오류가 없습니다.")
+
+            from collections import Counter
+            weak_counter = Counter()
+            for items in df["weak_concepts"]:
+                if isinstance(items, list):
+                    weak_counter.update([x for x in items if x])
+
+            if weak_counter:
+                st.markdown("### 반복적으로 나타난 취약 개념")
+                weak_df = pd.DataFrame(
+                    weak_counter.most_common(10), columns=["개념", "언급 횟수"]
+                ).set_index("개념")
+                st.bar_chart(weak_df)
+
+            st.markdown("### 최근 학습 기록")
+            show_cols = [
+                "created_at",
+                "stage",
+                "concept",
+                "score",
+                "verdict",
+                "error_type",
+                "question",
+            ]
+            st.dataframe(
+                display_df[show_cols].head(30),
+                width="stretch",
+                hide_index=True,
+            )
+
+            if cloud_logged_in():
+                st.caption(
+                    "단원별 기록은 해당 학습 단원에 연결되어 저장됩니다."
+                )
+            else:
+                if st.button("현재 세션 학습 기록 초기화"):
+                    st.session_state.attempts = []
+                    st.session_state.weak_queue = []
+                    st.session_state.ai_call_count = 0
+                    st.success("현재 브라우저 세션의 학습 기록을 초기화했습니다.")
+                    st.rerun()
 
 
 st.markdown(

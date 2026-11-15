@@ -231,17 +231,11 @@ def save_project_file(
         .eq("kind", kind)
         .execute()
     )
-    for row in existing.data or []:
-        path = row.get("storage_path")
-        if path:
-            try:
-                client.storage.from_(STORAGE_BUCKET).remove([path])
-            except Exception:
-                pass
-        client.table("project_files").delete().eq("id", row["id"]).eq("user_id", user_id).execute()
+    if existing.data:
+        raise ValueError("같은 이름의 자료가 이미 있습니다. 기존 자료는 유지했습니다. 파일 이름을 바꿔 올리거나 기존 자료를 삭제한 뒤 등록해 주세요.")
 
-    safe_name = file_name.replace("/", "_").replace("\\", "_")
-    storage_path = f"{user_id}/{project_id}/{chapter_id}/{uuid4().hex}_{safe_name}"
+    # Keep the original Unicode name in the database, with a portable object key.
+    storage_path = f"{user_id}/{project_id}/{chapter_id}/{uuid4().hex}.{suffix}"
     content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
     client.storage.from_(STORAGE_BUCKET).upload(
         path=storage_path,
