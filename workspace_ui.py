@@ -151,9 +151,6 @@ def render_reader(get_engine, call, evidence, refresh):
     .st-key-reader_document { padding:10px !important; border-radius:16px; overflow:hidden; }
     .st-key-reader_document [data-testid="stImage"] { margin:0; }
     .st-key-reader_document img { display:block; width:100%; height:auto; object-fit:contain; }
-    .st-key-reader_workspace { container-type:inline-size; }
-    .st-key-reader_explanation { height:clamp(190px,calc((100cqw - 80px) * .51923 * var(--page-ratio,1) * .60),600px); overflow-y:auto; }
-    .st-key-reader_chat { height:clamp(120px,calc((100cqw - 80px) * .51923 * var(--page-ratio,1) * .35),340px); overflow-y:auto; }
     .st-key-reader_explanation, .st-key-reader_chat_panel { border-radius:16px; border:1px solid var(--st-border-color,#e6e8ed); padding:18px !important; }
     .st-key-reader_explanation p, .st-key-reader_chat p { line-height:1.65; }
     .st-key-reader_tools .stButton button, .st-key-reader_tools [data-testid="stPopover"] button { height:36px; min-height:36px; padding:0 10px; border-radius:10px; }
@@ -192,14 +189,8 @@ def render_reader(get_engine, call, evidence, refresh):
     selected = scoped_records(records, "lecture", pages=pages)
     context = fit_context(selected)
     pdf = _pdf_for(meta)
-    ratio = 1.0
-    if pdf:
-        with fitz.open(stream=pdf, filetype="pdf") as preview_pdf:
-            rectangle = preview_pdf[page - 1].rect
-            ratio = rectangle.height / max(rectangle.width, 1)
-    st.markdown(f"<style>.st-key-reader_workspace{{--page-ratio:{ratio:.6f};}}</style>", unsafe_allow_html=True)
     with st.container(key="reader_workspace"):
-        left, right = st.columns([1.08, 1], gap="large", vertical_alignment="top")
+        left, right = st.columns([2, 3], gap="large", vertical_alignment="top")
         with left:
             st.markdown("**강의자료**")
             with st.container(border=True, key="reader_document"):
@@ -237,7 +228,7 @@ def render_reader(get_engine, call, evidence, refresh):
             note = st.session_state.reader_notes.get(sid)
             automatic = (not note and bool(st.session_state.get("user_api_key"))
                          and (newly_visible or attempt_id not in attempts))
-            with st.container(border=True, key="reader_explanation"):
+            with st.container(height=460, border=True, key="reader_explanation"):
                 if (regenerate or automatic) and not blocked:
                     attempts[attempt_id] = True
                     engine = get_engine()
@@ -269,7 +260,7 @@ def render_reader(get_engine, call, evidence, refresh):
             st.markdown("**이 페이지에 질문하기**")
             messages = st.session_state.reader_chats.get(sid, [])
             with st.container(border=True, key="reader_chat_panel"):
-                with st.container(key="reader_chat"):
+                with st.container(height=180, border=False, key="reader_chat"):
                     if not messages:
                         st.caption("수식의 의미나 그림에서 이해되지 않는 부분을 질문해 보세요.")
                     for index, message in enumerate(messages):
