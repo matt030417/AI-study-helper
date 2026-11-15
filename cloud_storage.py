@@ -215,7 +215,7 @@ def save_project_file(
     client: Client,
     user_id: str,
     project_id: str,
-    chapter_id: str,
+    chapter_id: str | None,
     file_name: str,
     kind: str,
     raw: bytes,
@@ -226,7 +226,6 @@ def save_project_file(
         .select("id,storage_path")
         .eq("user_id", user_id)
         .eq("project_id", project_id)
-        .eq("chapter_id", chapter_id)
         .eq("file_name", file_name)
         .eq("kind", kind)
         .execute()
@@ -235,7 +234,7 @@ def save_project_file(
         raise ValueError("같은 이름의 자료가 이미 있습니다. 기존 자료는 유지했습니다. 파일 이름을 바꿔 올리거나 기존 자료를 삭제한 뒤 등록해 주세요.")
 
     # Keep the original Unicode name in the database, with a portable object key.
-    storage_path = f"{user_id}/{project_id}/{chapter_id}/{uuid4().hex}.{suffix}"
+    storage_path = f"{user_id}/{project_id}/{uuid4().hex}.{suffix}"
     content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
     client.storage.from_(STORAGE_BUCKET).upload(
         path=storage_path,
@@ -249,7 +248,7 @@ def save_project_file(
                 {
                     "user_id": user_id,
                     "project_id": project_id,
-                    "chapter_id": chapter_id,
+                    "chapter_id": chapter_id or None,
                     "file_name": file_name,
                     "kind": kind,
                     "suffix": suffix,
@@ -348,15 +347,13 @@ def load_attempts(
     return [_normalize_attempt(row) for row in (response.data or [])]
 
 
-def save_attempt(client: Client, user_id: str, project_id: str, chapter_id: str, attempt: dict) -> dict:
+def save_attempt(client: Client, user_id: str, project_id: str, chapter_id: str | None, attempt: dict) -> dict:
     if not project_id:
         raise ValueError("현재 프로젝트가 선택되지 않았습니다.")
-    if not chapter_id:
-        raise ValueError("현재 학습 단원이 선택되지 않았습니다.")
     payload = {
         "user_id": user_id,
         "project_id": project_id,
-        "chapter_id": chapter_id,
+        "chapter_id": chapter_id or None,
         "stage": attempt.get("stage") or "",
         "concept": attempt.get("concept") or "",
         "score": int(attempt.get("score") or 0),

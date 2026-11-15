@@ -12,15 +12,12 @@ from ai_engine import AIEngine
 from study_core import new_workspace_state, file_key, cited_items
 from workspace_ui import render_reader, render_practice
 from cloud_storage import (
-    create_chapter,
     create_project,
-    delete_chapter,
     delete_project,
     delete_project_attempts,
     delete_project_file,
     download_project_file,
     load_attempts,
-    load_chapters,
     load_project_files,
     load_projects,
     normalize_username,
@@ -634,6 +631,12 @@ st.markdown(
 # -------------------------
 # Session state
 # -------------------------
+st.markdown("""<style>
+[data-testid="stMainBlockContainer"] { max-width:1700px; padding-top:1.4rem; }
+.stTabs [data-baseweb="tab-list"] { margin-bottom:12px; }
+.stTabs [data-baseweb="tab"] { height:44px; }
+</style>""", unsafe_allow_html=True)
+
 DEFAULTS = {
     "chunks": [],
     "retriever": None,
@@ -657,7 +660,7 @@ DEFAULTS = {
     "current_project_name": "",
     "loaded_material_project_id": "",
     "current_project_files": [],
-    "chapters": [],
+    "workspace_view": "courses",
     "current_chapter_id": "",
     "current_chapter_name": "",
     "loaded_material_chapter_id": "",
@@ -726,18 +729,6 @@ def current_project_attempts() -> list[dict]:
     ]
 
 
-def current_chapter_attempts() -> list[dict]:
-    project_id = st.session_state.get("current_project_id", "")
-    chapter_id = st.session_state.get("current_chapter_id", "")
-    if not project_id or not chapter_id:
-        return []
-    return [
-        a for a in st.session_state.get("attempts", [])
-        if str(a.get("project_id") or "") == str(project_id)
-        and str(a.get("chapter_id") or "") == str(chapter_id)
-    ]
-
-
 class MemoryUpload:
     """Minimal UploadedFile-compatible wrapper for files downloaded from project storage."""
     def __init__(self, name: str, raw: bytes):
@@ -754,6 +745,7 @@ def reset_learning_screen_state(clear_materials: bool = True):
             st.session_state[key] = value
     st.session_state.pop("exam_requested_concept", None)
     st.session_state.pop("reader_auto_attempts", None)
+    st.session_state.pop("reader_last_visible", None)
     st.session_state.question = None
     st.session_state.question_context = []
     st.session_state.oral_eval = None
@@ -768,59 +760,15 @@ def reset_learning_screen_state(clear_materials: bool = True):
         st.session_state.current_project_files = []
 
 
-def set_current_chapter(chapter_id: str):
-    chapter = next(
-        (c for c in st.session_state.get("chapters", []) if c["id"] == chapter_id),
-        None,
-    )
-    st.session_state.current_chapter_id = chapter_id or ""
-    st.session_state.current_chapter_name = chapter["name"] if chapter else ""
-    st.session_state.weak_queue = rebuild_weak_queue(current_chapter_attempts())
-
-    if st.session_state.get("loaded_material_chapter_id") != chapter_id:
-        reset_learning_screen_state(clear_materials=True)
-        st.session_state.loaded_material_project_id = ""
-        st.session_state.loaded_material_chapter_id = ""
-
-
-def refresh_current_project_chapters():
-    if not cloud_logged_in() or not st.session_state.get("current_project_id"):
-        st.session_state.chapters = []
-        set_current_chapter("")
-        return
-
-    chapters = load_chapters(
-        st.session_state.cloud_client,
-        st.session_state.cloud_user_id,
-        st.session_state.current_project_id,
-    )
-    st.session_state.chapters = chapters
-
-    valid_ids = {c["id"] for c in chapters}
-    current = st.session_state.get("current_chapter_id", "")
-    if current not in valid_ids:
-        current = chapters[0]["id"] if chapters else ""
-    set_current_chapter(current)
-
-
 def set_current_project(project_id: str):
-    project = next(
-        (p for p in st.session_state.get("projects", []) if p["id"] == project_id),
-        None,
-    )
+    project = next((p for p in st.session_state.projects if p["id"] == project_id), None)
     changed = st.session_state.get("current_project_id") != (project_id or "")
     st.session_state.current_project_id = project_id or ""
     st.session_state.current_project_name = project["name"] if project else ""
-
     if changed:
         reset_learning_screen_state(clear_materials=True)
         st.session_state.loaded_material_project_id = ""
-        st.session_state.loaded_material_chapter_id = ""
-        st.session_state.current_chapter_id = ""
-        st.session_state.current_chapter_name = ""
-
-    refresh_current_project_chapters()
-    st.session_state.weak_queue = rebuild_weak_queue(current_chapter_attempts())
+    st.session_state.weak_queue = rebuild_weak_queue(current_project_attempts())
 
 
 def load_current_project_materials(force: bool = False):
@@ -828,47 +776,40 @@ def load_current_project_materials(force: bool = False):
         return
 
     project_id = st.session_state.current_project_id
-    chapter_id = st.session_state.get("current_chapter_id", "")
-
-    if not chapter_id:
-        st.session_state.current_project_files = []
-        st.session_state.page_records = []
-        st.session_state.chunks = []
-        st.session_state.retriever = None
-        st.session_state.source_files = {}
-        st.session_state.loaded_material_project_id = project_id
-        st.session_state.loaded_material_chapter_id = ""
-        st.session_state.weak_queue = []
-        return
-
-    if (
-        not force
-        and st.session_state.get("loaded_material_project_id") == project_id
-        and st.session_state.get("loaded_material_chapter_id") == chapter_id
-    ):
+    if not force and st.session_state.get("loaded_material_project_id") == project_id:
         return
 
     files = load_project_files(
         st.session_state.cloud_client,
         st.session_state.cloud_user_id,
         project_id,
-        chapter_id,
     )
 
     page_records = []
     source_files = {}
     failed = []
 
+    used_names = set()
     for meta in files:
+        original_name = meta["file_name"]
+        display_name = original_name
+        suffix = "." + meta["suffix"] if meta.get("suffix") else ""
+        stem = original_name[:-len(suffix)] if suffix else original_name
+        occurrence = 2
+        while (meta["kind"], display_name) in used_names:
+            display_name = f"{stem} ({occurrence}){suffix}"
+            occurrence += 1
+        used_names.add((meta["kind"], display_name))
+        meta["display_name"] = display_name
         try:
             raw = download_project_file(
                 st.session_state.cloud_client,
                 meta["storage_path"],
             )
-            wrapped = MemoryUpload(meta["file_name"], raw)
+            wrapped = MemoryUpload(display_name, raw)
             page_records.extend(extract_uploaded_file(wrapped, meta["kind"]))
-            source_files[file_key(meta["kind"], meta["file_name"])] = {
-                "name": meta["file_name"],
+            source_files[file_key(meta["kind"], display_name)] = {
+                "name": display_name,
                 "raw": raw,
                 "suffix": meta["suffix"],
                 "kind": meta["kind"],
@@ -883,12 +824,11 @@ def load_current_project_materials(force: bool = False):
     st.session_state.retriever = LocalRetriever(chunks) if chunks else None
     st.session_state.source_files = source_files
     st.session_state.loaded_material_project_id = project_id
-    st.session_state.loaded_material_chapter_id = chapter_id
     reset_learning_screen_state(clear_materials=False)
-    st.session_state.weak_queue = rebuild_weak_queue(current_chapter_attempts())
+    st.session_state.weak_queue = rebuild_weak_queue(current_project_attempts())
 
     if failed:
-        st.warning("일부 단원 파일을 불러오지 못했습니다: " + " / ".join(failed[:3]))
+        st.warning("일부 과목 파일을 불러오지 못했습니다: " + " / ".join(failed[:3]))
 
 
 
@@ -896,22 +836,19 @@ def record_attempt(attempt: dict):
     """Save the learning result under the selected project."""
     local_attempt = dict(attempt)
     project_id = st.session_state.get("current_project_id", "")
-    chapter_id = st.session_state.get("current_chapter_id", "")
     local_attempt["project_id"] = project_id
-    local_attempt["chapter_id"] = chapter_id
+    local_attempt["chapter_id"] = ""
 
     if cloud_logged_in():
         if not project_id:
             st.warning("프로젝트가 선택되지 않아 학습 기록을 영구 저장하지 못했습니다.")
-        elif not chapter_id:
-            st.warning("학습 단원이 선택되지 않아 학습 기록을 영구 저장하지 못했습니다.")
         else:
             try:
                 saved = save_attempt(
                     st.session_state.cloud_client,
                     st.session_state.cloud_user_id,
                     project_id,
-                    chapter_id,
+                    None,
                     local_attempt,
                 )
                 st.session_state.attempts.append(saved)
@@ -942,6 +879,7 @@ def load_cloud_history():
         current = st.session_state.projects[0]["id"] if st.session_state.projects else ""
     set_current_project(current)
     st.session_state.cloud_loaded = True
+    st.session_state.workspace_view = "courses"
 
 
 def clear_cloud_session():
@@ -956,10 +894,10 @@ def clear_cloud_session():
     st.session_state.current_project_id = ""
     st.session_state.current_project_name = ""
     st.session_state.loaded_material_project_id = ""
-    st.session_state.chapters = []
     st.session_state.current_chapter_id = ""
     st.session_state.current_chapter_name = ""
     st.session_state.loaded_material_chapter_id = ""
+    st.session_state.workspace_view = "courses"
     reset_learning_screen_state(clear_materials=True)
 
 def get_provider_config():
@@ -1106,7 +1044,7 @@ with st.sidebar:
         """,
         unsafe_allow_html=True,
     )
-    st.caption("자료 해석·설명과 채팅 → 기출 풀이 → 취약 개념 복습")
+    st.caption("내 강의자료로 이해하고, 문제로 확인하기")
 
     st.markdown("### 학습 기록 계정")
     if cloud_enabled():
@@ -1212,12 +1150,8 @@ with st.sidebar:
     if cloud_logged_in():
         if st.session_state.get("current_project_name"):
             st.caption(
-                f"현재 프로젝트 · **{st.session_state.current_project_name}**"
+                f"현재 과목 · **{st.session_state.current_project_name}**"
             )
-            if st.session_state.get("current_chapter_name"):
-                st.caption(
-                    f"현재 단원 · **{st.session_state.current_chapter_name}**"
-                )
         elif st.session_state.get("projects"):
             st.caption("과목 목록에서 학습할 과목을 선택해 주세요.")
         else:
@@ -1366,313 +1300,187 @@ if not cloud_logged_in():
     st.stop()
 
 
-# 로그인 직후 또는 프로젝트 전환 직후 현재 프로젝트의 저장 자료를 자동으로 불러옵니다.
-if (
-    cloud_logged_in()
-    and st.session_state.get("current_project_id")
-    and (
-        st.session_state.get("loaded_material_project_id")
-            != st.session_state.get("current_project_id")
-        or st.session_state.get("loaded_material_chapter_id")
-            != st.session_state.get("current_chapter_id")
-    )
-):
-    with st.spinner("현재 프로젝트 자료를 불러오는 중..."):
-        load_current_project_materials()
+if st.session_state.get("workspace_view", "courses") == "courses" or not st.session_state.get("current_project_id"):
+    st.subheader("내 학습 과목")
+    st.caption("공부할 과목을 선택하세요.")
+    if not st.session_state.projects:
+        st.info("아직 프로젝트가 없습니다. 첫 과목을 만들어 주세요.")
+    else:
 
-st.subheader("내 학습 과목")
-st.caption("과목 카드를 선택하면 자료 설명·문제 풀이·학습 기록이 모두 해당 과목으로 전환됩니다.")
-if not st.session_state.projects:
-    st.info("아직 프로젝트가 없습니다. 첫 과목을 만들어 주세요.")
-else:
-    st.markdown("### 프로젝트 목록")
-    st.caption("학습할 과목 카드를 선택하면 해당 프로젝트의 자료와 학습 기록으로 전환됩니다.")
+        project_cols = st.columns(4)
+        for idx, project in enumerate(st.session_state.projects):
+            pa = [
+                a for a in st.session_state.attempts
+                if a.get("project_id") == project["id"]
+            ]
 
-    project_cols = st.columns(4)
-    for idx, project in enumerate(st.session_state.projects):
-        pa = [
-            a for a in st.session_state.attempts
-            if a.get("project_id") == project["id"]
-        ]
+            weak_counter = Counter()
+            for a in pa:
+                weak_counter.update(
+                    [x for x in (a.get("weak_concepts") or []) if x]
+                )
 
-        weak_counter = Counter()
-        for a in pa:
-            weak_counter.update(
-                [x for x in (a.get("weak_concepts") or []) if x]
+            top_weak_list = [
+                x for x, _ in weak_counter.most_common(2)
+            ]
+            top_weak = " · ".join(top_weak_list) if top_weak_list else "아직 없음"
+
+            avg_score = (
+                sum(a["score"] for a in pa) / len(pa)
+                if pa else None
             )
 
-        top_weak_list = [
-            x for x, _ in weak_counter.most_common(2)
-        ]
-        top_weak = " · ".join(top_weak_list) if top_weak_list else "아직 없음"
+            is_current = (
+                project["id"]
+                == st.session_state.get("current_project_id")
+            )
 
-        avg_score = (
-            sum(a["score"] for a in pa) / len(pa)
-            if pa else None
-        )
+            with project_cols[idx % 4]:
+                with st.container(border=True):
+                    title_col, select_col = st.columns([3.0, 1.45], gap="small")
 
-        is_current = (
-            project["id"]
-            == st.session_state.get("current_project_id")
-        )
+                    with title_col:
+                        st.markdown(
+                            f"""
+                            <div class="project-card-title">
+                                {'📂' if is_current else '📁'} {project['name']}
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
-        with project_cols[idx % 4]:
-            with st.container(border=True):
-                title_col, select_col = st.columns([3.0, 1.45], gap="small")
+                    with select_col:
+                        if st.button("열기", key=f"open_project_{project['id']}", width="stretch"):
+                            set_current_project(project["id"])
+                            st.session_state.workspace_view = "study"
+                            with st.spinner("과목 자료를 불러오는 중..."):
+                                load_current_project_materials()
+                            st.rerun()
 
-                with title_col:
                     st.markdown(
                         f"""
-                        <div class="project-card-title">
-                            {'📂' if is_current else '📁'} {project['name']}
+                        <div class="project-card-status {'project-current-label' if is_current else ''}">
+                            {'● 현재 학습 중' if is_current else '열기를 눌러 학습'}
                         </div>
                         """,
                         unsafe_allow_html=True,
                     )
 
-                with select_col:
-                    if is_current:
-                        st.markdown(
-                            """
-                            <div class="project-selected-badge">선택됨</div>
-                            """,
-                            unsafe_allow_html=True,
+                    stat1, stat2 = st.columns(2, gap="small")
+                    with stat1:
+                        st.metric("학습 기록", len(pa))
+                    with stat2:
+                        st.metric(
+                            "평균 점수",
+                            f"{avg_score:.1f}" if avg_score is not None else "-",
                         )
-                    else:
-                        with st.container(
-                            key=f"project_select_{project['id']}"
-                        ):
-                            if st.button(
-                                "선택",
-                                key=f"open_project_{project['id']}",
-                                help=f"{project['name']} 프로젝트 선택",
-                                width="stretch",
-                            ):
-                                set_current_project(project["id"])
-                                with st.spinner("프로젝트 자료를 불러오는 중..."):
-                                    load_current_project_materials(force=True)
-                                st.rerun()
 
-                st.markdown(
-                    f"""
-                    <div class="project-card-status {'project-current-label' if is_current else ''}">
-                        {'● 현재 학습 중' if is_current else '프로젝트 선택 후 학습'}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-                stat1, stat2 = st.columns(2, gap="small")
-                with stat1:
-                    st.metric("학습 기록", len(pa))
-                with stat2:
-                    st.metric(
-                        "평균 점수",
-                        f"{avg_score:.1f}" if avg_score is not None else "-",
+                    st.markdown("**주요 취약 개념**")
+                    st.markdown(
+                        f"""
+                        <div class="project-card-weak">{top_weak}</div>
+                        """,
+                        unsafe_allow_html=True,
                     )
 
-                st.markdown("**주요 취약 개념**")
-                st.markdown(
-                    f"""
-                    <div class="project-card-weak">{top_weak}</div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-
-    st.write("")
+        st.write("")
 
 
-with st.expander("새 과목 만들기", expanded=not bool(st.session_state.projects)):
-    with st.form("new_project_form", clear_on_submit=True):
-        new_project_name = st.text_input(
-            "새 프로젝트 이름",
-            placeholder="예: 물리화학",
-        )
-        new_project_desc = ""
-        create_clicked = st.form_submit_button(
-            "새 프로젝트 만들기",
-            type="primary",
-            width="stretch",
-        )
-    if create_clicked:
-        try:
-            created = create_project(
-                st.session_state.cloud_client,
-                st.session_state.cloud_user_id,
-                new_project_name,
-                new_project_desc,
+    with st.expander("과목 추가", expanded=not bool(st.session_state.projects)):
+        with st.form("new_project_form", clear_on_submit=True):
+            new_project_name = st.text_input(
+                "과목 이름",
+                placeholder="예: 물리화학",
             )
-            st.session_state.projects = load_projects(
-                st.session_state.cloud_client,
-                st.session_state.cloud_user_id,
+            new_project_desc = ""
+            create_clicked = st.form_submit_button(
+                "과목 만들기",
+                type="primary",
+                width="stretch",
             )
-            set_current_project(created["id"])
-            st.session_state.current_project_files = []
-            st.session_state.chapters = []
-            st.session_state.current_chapter_id = ""
-            st.session_state.current_chapter_name = ""
-            st.success(f"'{created['name']}' 프로젝트를 만들었습니다.")
-            st.rerun()
-        except Exception as e:
-            if "duplicate" in str(e).lower() or "unique" in str(e).lower():
-                st.error("같은 이름의 프로젝트가 이미 있습니다.")
-            else:
-                st.error(f"프로젝트 생성 실패: {e}")
-
-
-current = next((p for p in st.session_state.projects if p["id"] == st.session_state.current_project_id), None)
-if current:
-    with st.expander("현재 프로젝트 이름/설명 수정 또는 삭제"):
-        edit_name = st.text_input("프로젝트 이름", value=current["name"], key=f"edit_project_name_{current['id']}")
-        edit_desc = st.text_input("설명", value=current.get("description", ""), key=f"edit_project_desc_{current['id']}")
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.button("프로젝트 정보 저장", width="stretch"):
-                try:
-                    rename_project(
-                        st.session_state.cloud_client,
-                        st.session_state.cloud_user_id,
-                        current["id"],
-                        edit_name,
-                        edit_desc,
-                    )
-                    st.session_state.projects = load_projects(
-                        st.session_state.cloud_client,
-                        st.session_state.cloud_user_id,
-                    )
-                    set_current_project(current["id"])
-                    st.success("프로젝트 정보를 수정했습니다.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"수정 실패: {e}")
-        with c2:
-            delete_confirm = st.checkbox("프로젝트 삭제에 동의", key=f"project_delete_confirm_{current['id']}")
-            if st.button("프로젝트 삭제", disabled=not delete_confirm, width="stretch"):
-                try:
-                    delete_project(
-                        st.session_state.cloud_client,
-                        st.session_state.cloud_user_id,
-                        current["id"],
-                    )
-                    st.session_state.projects = load_projects(
-                        st.session_state.cloud_client,
-                        st.session_state.cloud_user_id,
-                    )
-                    next_id = st.session_state.projects[0]["id"] if st.session_state.projects else ""
-                    set_current_project(next_id)
-                    if next_id:
-                        load_current_project_materials(force=True)
-                    st.success("프로젝트와 해당 학습 기록·파일을 삭제했습니다.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"프로젝트 삭제 실패: {e}")
-
-
-
-if cloud_logged_in() and st.session_state.get("current_project_id"):
-    if st.session_state.get("chapters"):
-        chapter_map = {c["id"]: c["name"] for c in st.session_state.chapters}
-        chapter_ids = list(chapter_map.keys())
-        current_chapter = st.session_state.get("current_chapter_id", "")
-        chapter_index = chapter_ids.index(current_chapter) if current_chapter in chapter_ids else 0
-
-        chapter_left, chapter_right = st.columns([3, 2])
-        with chapter_left:
-            selected_chapter_id = st.selectbox(
-                "현재 학습 단원",
-                options=chapter_ids,
-                index=chapter_index,
-                format_func=lambda x: chapter_map[x],
-                key=f"chapter_selector_{st.session_state.current_project_id}",
-            )
-        with chapter_right:
-            st.caption("취약 개념과 문제 출제는 **현재 단원 안에서만** 이어집니다.")
-
-        if selected_chapter_id != st.session_state.get("current_chapter_id"):
-            set_current_chapter(selected_chapter_id)
-            with st.spinner("선택한 단원 자료를 불러오는 중..."):
-                load_current_project_materials(force=True)
-            st.rerun()
-    else:
-        st.info(
-            "현재 프로젝트에 학습 단원이 없습니다. "
-            "아래 '학습 단원 추가·삭제'에서 첫 단원을 만들어 주세요."
-        )
-
-
-
-if st.session_state.get("current_project_id"):
-    st.markdown(f"### {st.session_state.current_project_name}")
-    with st.expander("학습 단원 추가·삭제", expanded=not bool(st.session_state.chapters)):
-        st.markdown("### 학습 단원 관리")
-        st.caption(
-            "한 과목 안에서도 Chapter별로 자료와 취약 개념을 분리합니다. "
-            "예: Chapter 3 이온결합 / Chapter 12 반응속도론"
-        )
-
-        new_col, delete_col = st.columns([3, 1])
-        with new_col:
-            with st.form("new_chapter_form", clear_on_submit=True):
-                new_chapter_name = st.text_input(
-                    "새 학습 단원",
-                    placeholder="예: Chapter 3 이온결합",
+        if create_clicked:
+            try:
+                created = create_project(
+                    st.session_state.cloud_client,
+                    st.session_state.cloud_user_id,
+                    new_project_name,
+                    new_project_desc,
                 )
-                make_chapter = st.form_submit_button(
-                    "단원 만들기",
-                    type="primary",
-                    width="stretch",
+                st.session_state.projects = load_projects(
+                    st.session_state.cloud_client,
+                    st.session_state.cloud_user_id,
                 )
-            if make_chapter:
-                try:
-                    created_chapter = create_chapter(
-                        st.session_state.cloud_client,
-                        st.session_state.cloud_user_id,
-                        st.session_state.current_project_id,
-                        new_chapter_name,
-                    )
-                    refresh_current_project_chapters()
-                    set_current_chapter(created_chapter["id"])
-                    load_current_project_materials(force=True)
-                    st.success(f"'{created_chapter['name']}' 단원을 만들었습니다.")
-                    st.rerun()
-                except Exception as e:
-                    if "duplicate" in str(e).lower() or "unique" in str(e).lower():
-                        st.error("같은 이름의 학습 단원이 이미 있습니다.")
-                    else:
-                        st.error(f"학습 단원 생성 실패: {e}")
+                set_current_project(created["id"])
+                st.success(f"'{created['name']}' 과목을 만들었습니다.")
+                st.rerun()
+            except Exception as e:
+                if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                    st.error("같은 이름의 과목가 이미 있습니다.")
+                else:
+                    st.error(f"과목 생성 실패: {e}")
 
-        with delete_col:
-            if st.session_state.get("current_chapter_id"):
-                st.write("")
-                st.write("")
-                confirm_delete_chapter = st.checkbox(
-                    "현재 단원 삭제",
-                    key=f"confirm_delete_chapter_{st.session_state.current_chapter_id}",
-                )
-                if st.button(
-                    "삭제",
-                    key="delete_chapter_button",
-                    disabled=not confirm_delete_chapter,
-                    width="stretch",
-                ):
+
+    current = next((p for p in st.session_state.projects if p["id"] == st.session_state.current_project_id), None)
+    if current:
+        with st.expander("선택한 과목 관리"):
+            edit_name = st.text_input("과목 이름", value=current["name"], key=f"edit_project_name_{current['id']}")
+            edit_desc = st.text_input("설명", value=current.get("description", ""), key=f"edit_project_desc_{current['id']}")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("과목 정보 저장", width="stretch"):
                     try:
-                        delete_chapter(
+                        rename_project(
                             st.session_state.cloud_client,
                             st.session_state.cloud_user_id,
-                            st.session_state.current_project_id,
-                            st.session_state.current_chapter_id,
+                            current["id"],
+                            edit_name,
+                            edit_desc,
                         )
-                        st.session_state.current_chapter_id = ""
-                        st.session_state.current_chapter_name = ""
-                        refresh_current_project_chapters()
-                        load_current_project_materials(force=True)
-                        st.success("학습 단원을 삭제했습니다.")
+                        st.session_state.projects = load_projects(
+                            st.session_state.cloud_client,
+                            st.session_state.cloud_user_id,
+                        )
+                        set_current_project(current["id"])
+                        st.success("과목 정보를 수정했습니다.")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"학습 단원 삭제 실패: {e}")
+                        st.error(f"수정 실패: {e}")
+            with c2:
+                delete_confirm = st.checkbox("과목 삭제에 동의", key=f"project_delete_confirm_{current['id']}")
+                if st.button("과목 삭제", disabled=not delete_confirm, width="stretch"):
+                    try:
+                        delete_project(
+                            st.session_state.cloud_client,
+                            st.session_state.cloud_user_id,
+                            current["id"],
+                        )
+                        st.session_state.projects = load_projects(
+                            st.session_state.cloud_client,
+                            st.session_state.cloud_user_id,
+                        )
+                        next_id = st.session_state.projects[0]["id"] if st.session_state.projects else ""
+                        set_current_project(next_id)
+                        if next_id:
+                            load_current_project_materials(force=True)
+                        st.success("프로젝트와 해당 학습 기록·파일을 삭제했습니다.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"프로젝트 삭제 실패: {e}")
 
 
 
+    st.stop()
+
+if st.session_state.get("loaded_material_project_id") != st.session_state.current_project_id:
+    with st.spinner("과목 자료를 불러오는 중..."):
+        load_current_project_materials()
+
+course_name, course_back = st.columns([6, 1])
+course_name.markdown(f"## {st.session_state.current_project_name}")
+if course_back.button("← 과목 선택", key="back_to_courses", width="stretch"):
+    st.session_state.workspace_view = "courses"
+    st.session_state.pop("reader_last_visible", None)
+    st.rerun()
 
 tab_reader, tab_practice = st.tabs(["자료 설명", "문제 풀이"])
 with tab_reader:
@@ -1695,13 +1503,8 @@ with tab_practice:
             )
 
         if st.session_state.get("current_project_name"):
-            chapter_label = st.session_state.get("current_chapter_name") or "단원 미선택"
-            st.info(
-                f"현재 프로젝트 **{st.session_state.current_project_name}** · "
-                f"학습 단원 **{chapter_label}**의 학습 현황입니다."
-            )
-
-        attempts = current_chapter_attempts() if st.session_state.get("current_chapter_id") else []
+            st.caption(f"{st.session_state.current_project_name}의 전체 학습 기록입니다.")
+        attempts = current_project_attempts()
 
         if not attempts:
             st.info("아직 채점 기록이 없습니다. 문제 풀이에서 답안을 채점하면 여기에 누적됩니다.")
@@ -1758,7 +1561,7 @@ with tab_practice:
 
             if cloud_logged_in():
                 st.caption(
-                    "단원별 기록은 해당 학습 단원에 연결되어 저장됩니다."
+                    "학습 기록은 현재 과목에 연결되어 저장됩니다."
                 )
             else:
                 if st.button("현재 세션 학습 기록 초기화"):
@@ -1768,17 +1571,3 @@ with tab_practice:
                     st.success("현재 브라우저 세션의 학습 기록을 초기화했습니다.")
                     st.rerun()
 
-
-st.markdown(
-    f"""
-    <div class="kuac-footer">
-        <div class="kuac-footer-mark">“</div>
-        <div class="kuac-footer-text">하고싶은 일이 있다면, 함께</div>
-        <div class="kuac-footer-brand">
-            <img src="{KUAC_LOGO_DATA_URI}" alt="KUAC logo">
-            <span>KUAC · Korea University AI Creators</span>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
