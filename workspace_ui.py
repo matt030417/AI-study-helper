@@ -138,8 +138,36 @@ def _needs_vision(records):
                "텍스트가 없는 슬라이드" in r["text"] for r in records)
 
 
-def _move_reader_page(key: str, offset: int, total: int):
-    st.session_state[key] = max(1, min(total, int(st.session_state.get(key, 1)) + offset))
+def _move_reader_page(key: str, offset: int, end: int, start: int = 1):
+    st.session_state[key] = max(start, min(end, int(st.session_state.get(key, start)) + offset))
+
+
+def _reader_page_range(total: int, scope_id: str, raw_id: str, cursor: str) -> tuple[int, int]:
+    key = f"reader_range_{scope_id}_{raw_id}"
+    start, end = st.session_state.setdefault(key, (1, min(10, total)))
+    with st.container(key="reader_range_controls"):
+        label = f"{start}–{end}페이지" if start != end else f"{start}페이지"
+        with st.popover(label, help="설명할 범위 설정 · 최대 10페이지", width="stretch"):
+            st.markdown("**설명할 페이지 범위**")
+            st.caption(f"전체 {total}페이지 중 한 번에 최대 10페이지를 선택할 수 있습니다.")
+            with st.form(f"{key}_form"):
+                first, last = st.columns(2)
+                selected_start = first.number_input("시작 페이지", min_value=1, max_value=total,
+                                                   value=start, step=1, key=f"{key}_start")
+                selected_end = last.number_input("끝 페이지", min_value=1, max_value=total,
+                                                 value=end, step=1, key=f"{key}_end")
+                apply = st.form_submit_button("범위 적용", type="primary", width="stretch")
+            if apply:
+                if selected_end < selected_start:
+                    st.warning("끝 페이지를 시작 페이지 이상으로 설정해 주세요.")
+                elif selected_end - selected_start + 1 > 10:
+                    st.warning("최대 10페이지까지 선택할 수 있습니다. 끝 페이지를 줄여 주세요.")
+                else:
+                    st.session_state[key] = (selected_start, selected_end)
+                    current = int(st.session_state.get(cursor, selected_start))
+                    st.session_state[cursor] = max(selected_start, min(selected_end, current))
+                    st.rerun()
+    return start, end
 
 
 def render_reader(get_engine, call, evidence, refresh):
@@ -148,6 +176,7 @@ def render_reader(get_engine, call, evidence, refresh):
     .st-key-reader_pager [data-testid="stHorizontalBlock"] { gap:6px; align-items:center; }
     .st-key-reader_pager .stButton button { width:40px !important; height:40px; min-height:40px; padding:0; border-radius:11px; font-size:25px; line-height:1; }
     .st-key-reader_pager [data-testid="stPopover"] button { height:40px; min-height:40px; padding:0 10px; border-radius:11px; font-size:14px; }
+    .st-key-reader_range_controls [data-testid="stPopover"] > button { height:40px; min-height:40px; border-radius:11px; }
     .st-key-reader_document { padding:10px !important; border-radius:16px; overflow:hidden; }
     .st-key-reader_document [data-testid="stImage"] { margin:0; }
     .st-key-reader_document img { display:block; width:100%; height:auto; object-fit:contain; }
@@ -162,29 +191,32 @@ def render_reader(get_engine, call, evidence, refresh):
     if not sources:
         st.info("강의자료를 올리면 왼쪽에 원본, 오른쪽에 페이지별 설명과 채팅이 표시됩니다.")
         return
-    selector, pager = st.columns([6, 2], gap="small", vertical_alignment="center")
+    selector, range_controls, pager = st.columns([5, 2.4, 2], gap="small", vertical_alignment="center")
     with selector:
         meta = _pick_file("lecture", "reader", compact=True)
     records = scoped_records(st.session_state.page_records, "lecture", meta["name"])
     total = _page_count(meta, records)
     raw_id = hashlib.sha256(meta["name"].encode() + meta["raw"]).hexdigest()[:12]
     cursor = f"reader_page_{scope()}_{raw_id}"
+    with range_controls:
+        start, end = _reader_page_range(total, scope(), raw_id, cursor)
     if cursor not in st.session_state:
-        st.session_state[cursor] = 1
-    st.session_state[cursor] = max(1, min(total, int(st.session_state[cursor])))
+        st.session_state[cursor] = start
+    st.session_state[cursor] = max(start, min(end, int(st.session_state[cursor])))
     page = int(st.session_state[cursor])
     with pager:
         with st.container(key="reader_pager"):
             prev, middle, nxt = st.columns([1, 2.2, 1], gap="small", vertical_alignment="center")
             prev.button("‹", help="이전 페이지", key=f"reader_prev_{scope()}_{raw_id}",
-                        disabled=page == 1, width="stretch",
-                        on_click=_move_reader_page, args=(cursor, -1, total))
+                        disabled=page == start, width="stretch",
+                        on_click=_move_reader_page, args=(cursor, -1, end, start))
             with middle:
-                with st.popover(f"{page} / {total}", width="stretch"):
-                    st.number_input("페이지로 이동", min_value=1, max_value=total, step=1, key=cursor)
+                with st.popover(f"{page}페이지", help=f"선택 범위 {start}–{end}페이지 안에서 이동", width="stretch"):
+                    st.caption(f"설명 범위: {start}–{end}페이지 · 전체 {total}페이지")
+                    st.number_input("페이지로 이동", min_value=start, max_value=end, step=1, key=cursor)
             nxt.button("›", help="다음 페이지", key=f"reader_next_{scope()}_{raw_id}",
-                       disabled=page == total, width="stretch",
-                       on_click=_move_reader_page, args=(cursor, 1, total))
+                       disabled=page == end, width="stretch",
+                       on_click=_move_reader_page, args=(cursor, 1, end, start))
     pages = [page]
     selected = scoped_records(records, "lecture", pages=pages)
     context = fit_context(selected)
@@ -260,7 +292,7 @@ def render_reader(get_engine, call, evidence, refresh):
             st.markdown("**이 페이지에 질문하기**")
             messages = st.session_state.reader_chats.get(sid, [])
             with st.container(border=True, key="reader_chat_panel"):
-                with st.container(height=180, border=False, key="reader_chat"):
+                with st.container(border=False, key="reader_chat"):
                     if not messages:
                         st.caption("수식의 의미나 그림에서 이해되지 않는 부분을 질문해 보세요.")
                     for index, message in enumerate(messages):
