@@ -11,7 +11,7 @@ import streamlit as st
 from cloud_storage import delete_project_file, save_project_file
 from document_engine import (context_to_text, extract_uploaded_file, pages_to_images,
                              pptx_to_pdf, render_pdf_page_png, solution_file_to_images)
-from study_core import (cited_items, file_key, fit_context, parse_pages, reader_id,
+from study_core import (cited_items, file_key, fit_context, new_workspace_state, parse_pages, reader_id,
                         scoped_records)
 
 
@@ -29,58 +29,148 @@ def scope() -> str:
     return hashlib.sha256(repr(values).encode()).hexdigest()[:12]
 
 
+def _material_selection_key(kind: str) -> str:
+    widget = "reader" if kind == "lecture" else "exam"
+    return f"workspace_{widget}_source_{scope()}"
+
+
+def _available_material_name(name: str, used_names: set[str]) -> str:
+    stem, dot, suffix = name.rpartition(".")
+    if not dot:
+        stem, suffix = name, ""
+    extension = f".{suffix}" if dot else ""
+    candidate, index = name, 2
+    while candidate in used_names:
+        candidate = f"{stem} ({index}){extension}"
+        index += 1
+    return candidate
+
+
+def _add_materials(files, kind: str) -> dict:
+    """Append a batch without replacing existing course files."""
+    used = {m["file_name"] for m in st.session_state.current_project_files if m["kind"] == kind}
+    known = {(m["name"], hashlib.sha256(m["raw"]).hexdigest()): m["name"]
+             for m in st.session_state.source_files.values() if m["kind"] == kind}
+    progress = st.session_state.setdefault(f"material_uploaded_{kind}_{scope()}", {})
+    known.update({identity: name for identity, name in progress.items() if name in used})
+    outcome = {"added": [], "skipped": [], "renamed": [], "errors": []}
+    for upload in files:
+        try:
+            raw = upload.getvalue()
+            identity = (upload.name, hashlib.sha256(raw).hexdigest())
+            if identity in known:
+                outcome["skipped"].append(upload.name)
+                continue
+            if len(raw) > 50 * 1024 * 1024:
+                raise ValueError("파일 한 개는 50MB 이하여야 합니다.")
+            name = _available_material_name(upload.name, used)
+            if not extract_uploaded_file(MemoryFile(name, raw), kind):
+                raise ValueError("인식할 수 있는 페이지나 텍스트가 없습니다.")
+            save_project_file(st.session_state.cloud_client, st.session_state.cloud_user_id,
+                              st.session_state.current_project_id, None, name, kind, raw)
+            used.add(name)
+            known[identity] = progress[identity] = name
+            outcome["added"].append(name)
+            if name != upload.name:
+                outcome["renamed"].append(f"{upload.name} → {name}")
+        except Exception as exc:
+            outcome["errors"].append(f"{upload.name}: {exc}")
+    return outcome
+
+
+def _show_material_notice(notice: dict):
+    if notice.get("added"):
+        st.success(f"{len(notice['added'])}개 자료를 추가했습니다. 기존 자료도 그대로 보관됩니다.")
+    if notice.get("skipped"):
+        st.info(f"이미 저장한 동일한 자료 {len(notice['skipped'])}개는 다시 저장하지 않았습니다.")
+    if notice.get("renamed"):
+        st.caption("같은 이름의 자료는 번호를 붙여 추가했습니다: " + " / ".join(notice["renamed"]))
+    for error in notice.get("errors", []):
+        st.error(error)
+
+
 def material_upload(kind: str, refresh, optional: bool = False):
     label = "강의자료" if kind == "lecture" else "기출문제"
     if not st.session_state.get("current_project_id"):
         st.info("먼저 학습할 과목을 선택해 주세요.")
         return
+    scope_id = scope()
     saved = [m for m in st.session_state.current_project_files if m["kind"] == kind]
-    optional_label = "선택 · " if optional else ""
-    with st.expander(f"{label} 업로드·관리 ({optional_label}{len(saved)}개)", expanded=not saved and not optional):
-        st.caption("PDF·PPTX·TXT·MD 지원 · 저장한 자료는 현재 과목에 연결됩니다.")
-        with st.form(f"workspace_upload_{kind}_{scope()}", clear_on_submit=True):
-            files = st.file_uploader(label, type=["pdf", "pptx", "txt", "md"],
-                                     accept_multiple_files=True, key=f"workspace_files_{kind}_{scope()}")
-            submitted = st.form_submit_button("저장하고 열기", type="primary")
-        if submitted:
-            if not files:
-                st.warning("파일을 하나 이상 선택해 주세요.")
-            else:
-                errors, saved_count = [], 0
-                with st.spinner(f"{label}를 현재 과목에 저장하는 중..."):
-                    for upload in files:
-                        try:
-                            if len(upload.getvalue()) > 50 * 1024 * 1024:
-                                raise ValueError("파일 한 개는 50MB 이하여야 합니다.")
-                            if not extract_uploaded_file(upload, kind):
-                                raise ValueError("인식할 수 있는 페이지나 텍스트가 없습니다.")
-                            save_project_file(st.session_state.cloud_client,
-                                              st.session_state.cloud_user_id,
-                                              st.session_state.current_project_id,
-                                              None,
-                                              upload.name, kind, upload.getvalue())
-                            saved_count += 1
-                        except Exception as exc:
-                            errors.append(f"{upload.name}: {exc}")
-                    if saved_count:
+    source_keys = [k for k, m in st.session_state.source_files.items() if m["kind"] == kind]
+    selection_key = _material_selection_key(kind)
+    if source_keys:
+        current = st.session_state.get(selection_key)
+        st.session_state[selection_key] = current if current in source_keys else source_keys[0]
+    notice_key = f"material_notice_{kind}_{scope_id}"
+    notice = st.session_state.pop(notice_key, None)
+    if notice:
+        _show_material_notice(notice)
+    folder, add = st.columns([3, 1], gap="small", vertical_alignment="center")
+    with folder:
+        with st.popover(f"📁 {label} 폴더 · {len(saved)}개", width="stretch"):
+            st.markdown(f"**저장한 {label}**")
+            st.caption("파일 이름을 누르면 해당 자료가 열립니다.")
+            if not saved:
+                st.info("아직 자료가 없습니다. 옆의 ‘자료 추가’에서 올려 주세요.")
+            for meta in saved:
+                name = meta.get("display_name", meta["file_name"])
+                source_key = file_key(kind, name)
+                readable = source_key in st.session_state.source_files
+                open_col, delete_col = st.columns([6, 1], gap="small")
+                if open_col.button(f"📄 {name}", key=f"material_open_{kind}_{meta['id']}_{scope_id}",
+                                   type="primary" if st.session_state.get(selection_key) == source_key else "secondary",
+                                   disabled=not readable, width="stretch"):
+                    st.session_state[selection_key] = source_key
+                    st.rerun()
+                if delete_col.button("×", help="이 자료 삭제", key=f"workspace_delete_{meta['id']}_{scope_id}"):
+                    try:
+                        delete_project_file(st.session_state.cloud_client, st.session_state.cloud_user_id, meta["id"])
                         refresh(force=True)
-                for error in errors:
-                    st.error(error)
-                if saved_count and not errors:
+                    except Exception as exc:
+                        st.error(f"파일을 삭제하지 못했습니다: {exc}")
+                    else:
+                        st.rerun()
+                if not readable:
+                    st.caption(f"{name}: 불러오지 못한 자료입니다.")
+    with add:
+        with st.popover("＋ 자료 추가", help=f"{label}를 여러 개 선택하거나 나중에 더 추가할 수 있습니다.", width="stretch"):
+            st.markdown(f"**{label} 추가{' (선택)' if optional else ''}**")
+            st.caption("PDF·PPTX·TXT·MD · 파일당 50MB 이하 · 여러 파일을 한 번에 선택할 수 있습니다.")
+            st.caption("이미 올린 자료는 유지됩니다. 같은 이름의 다른 파일은 번호를 붙여 저장합니다.")
+            revision_key = f"material_upload_revision_{kind}_{scope_id}"
+            revision = st.session_state.get(revision_key, 0)
+            files = st.file_uploader(f"추가할 {label}", type=["pdf", "pptx", "txt", "md"],
+                                     accept_multiple_files=True,
+                                     key=f"workspace_files_{kind}_{scope_id}_{revision}")
+            if st.button("추가하고 열기", key=f"material_save_{kind}_{scope_id}",
+                         type="primary", disabled=not files, width="stretch"):
+                with st.spinner(f"{label}를 현재 과목에 추가하는 중..."):
+                    outcome = _add_materials(files, kind)
+                    if outcome["added"]:
+                        # The append does not invalidate existing explanations or in-progress answers.
+                        learning = {k: st.session_state[k] for k in new_workspace_state()
+                                    if k != "page_records" and k in st.session_state}
+                        try:
+                            refresh(force=True)
+                        except Exception as exc:
+                            outcome["errors"].append(f"저장 후 목록을 새로 고치지 못했습니다: {exc}")
+                            st.session_state.loaded_material_project_id = ""
+                        finally:
+                            for key, value in learning.items():
+                                st.session_state[key] = value
+                        first_new = file_key(kind, outcome["added"][0])
+                        if first_new in st.session_state.source_files:
+                            st.session_state[selection_key] = first_new
+                if outcome["errors"]:
+                    # Keep the selected files so a failed item can be retried without reselecting.
+                    _show_material_notice(outcome)
+                    if outcome["added"]:
+                        st.session_state[notice_key] = outcome
+                        st.rerun()
+                else:
+                    st.session_state[revision_key] = revision + 1
+                    st.session_state[notice_key] = outcome
                     st.rerun()
-                elif saved_count:
-                    st.success(f"{saved_count}개 파일을 저장했습니다. 실패한 파일은 다시 올려 주세요.")
-        for meta in saved:
-            name_col, delete_col = st.columns([5, 1])
-            name_col.write(meta.get("display_name", meta["file_name"]))
-            if delete_col.button("삭제", key=f"workspace_delete_{meta['id']}_{scope()}"):
-                try:
-                    delete_project_file(st.session_state.cloud_client,
-                                        st.session_state.cloud_user_id, meta["id"])
-                    refresh(force=True)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"파일을 삭제하지 못했습니다: {exc}")
 
 
 def _pdf_for(meta: dict) -> bytes | None:
